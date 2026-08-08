@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>hexapod_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    Top-level orchestration package. Contains only composed launch files that
+    include the launch files of the other packages, plus the arguments that
+    select between simulation and hardware. This is the single entry point a
+    user (or an examiner) runs; nothing else in the stack depends on it.
+  </description>
+  <maintainer email="hexapod69420@gmail.com">Varun</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>hexapod_description</exec_depend>
+  <exec_depend>hexapod_gazebo</exec_depend>
+  <exec_depend>hexapod_control</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

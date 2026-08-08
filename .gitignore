@@ -1,0 +1,28 @@
+# colcon build artefacts -- never commit, never sync to Windows/OneDrive
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Editor
+.vscode/
+*.code-workspace
+.idea/
+
+# OS / cloud sync noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated/intermediate model files (regenerate from xacro; do not commit)
+*.urdf.generated
+/src/**/urdf/*.generated.urdf
+
+# Large binary meshes are committed deliberately -- if the repo gets heavy,
+# switch to git-lfs rather than ignoring them:
+#   git lfs track "*.stl" "*.dae"

@@ -1,0 +1,267 @@
+<?xml version="1.0"?>
+<!--
+  leg_macro.xacro
+  ============================================================================
+  ONE definition of a 3-DOF leg, instantiated six times.
+
+  WHAT A XACRO MACRO IS AND WHY IT MATTERS HERE
+  ---------------------------------------------
+  URDF is plain XML: no variables, no loops, no reuse. A literal URDF for this
+  robot is ~1400 lines of near-identical text. Xacro is a preprocessor that
+  expands macros and evaluates ${...} expressions into that URDF before ROS
+  ever sees it. Nothing at runtime knows xacro exists.
+
+  The engineering argument is not "less typing". It is that six hand-copied
+  legs are six independent opportunities for a typo, and a typo in leg 4's
+  femur origin produces a robot that walks in a curve for reasons that will
+  take you a day to find. With a macro, all six legs are correct or all six
+  are wrong -- and "all six wrong" is a bug you find in ten seconds.
+
+  KINEMATIC CHAIN
+  ---------------
+    base_link
+      -> [coxa joint : revolute about Z]  yaw, swings the leg fore/aft
+        -> coxa_link
+          -> [femur joint : revolute about Y]  pitch, lifts/lowers
+            -> femur_link
+              -> [tibia joint : revolute about Y]  pitch, extends/retracts
+                -> tibia_link
+                  -> [foot joint : FIXED]
+                    -> foot_link   (contact sphere)
+
+  FRAME CONVENTION -- read this before debugging any sign error
+  -------------------------------------------------------------
+  * Every segment extends along its own local +X axis. So a joint's child
+    origin is always (segment_length, 0, 0) in the parent's frame. One rule,
+    no special cases.
+  * base_link follows REP-103: +X forward, +Y left, +Z up.
+  * Coxa axis is +Z. Positive coxa angle rotates the leg counter-clockwise
+    seen from above.
+  * Femur and tibia axes are +Y. By the right-hand rule, rotation about +Y
+    maps +X toward -Z. Therefore:
+
+        POSITIVE femur angle moves the foot DOWNWARD.
+        POSITIVE tibia angle moves the foot DOWNWARD/inward.
+
+    This is stated explicitly because it is the #1 source of sign bugs in the
+    Phase 7 inverse kinematics. We keep the mathematically clean right-handed
+    axis and document the consequence, rather than flipping the axis to make
+    it "feel right" and creating a left-handed frame that breaks every
+    standard rotation formula later.
+
+  MIRRORING -- why there is none
+  ------------------------------
+  Left and right legs use this SAME macro with no mirrored axes. The mount
+  yaw passed in by the caller rotates the entire chain into position, so in
+  each leg's own local frame the geometry is identical. Mirroring joint axes
+  instead is the classic hexapod mistake: three legs end up bending backwards
+  and no amount of gait tuning fixes it.
+============================================================================ -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="hexapod_leg"
+               params="prefix mount_x mount_y mount_z mount_yaw">
+
+    <!-- ==================================================================
+         COXA  --  attaches to the body, rotates about vertical Z
+    ================================================================== -->
+    <link name="${prefix}_coxa_link">
+      <visual>
+        <!-- A URDF <cylinder> is defined along Z. Rotating +90 deg about Y
+             maps Z onto X, aligning it with our +X segment convention.
+             The xyz offset places the cylinder's CENTRE at half its length,
+             so the link frame sits at the JOINT, not the middle of the part.
+             Link frame at the joint is what makes the kinematics readable. -->
+        <origin xyz="${coxa_length/2} 0 0" rpy="0 ${pi/2} 0"/>
+        <geometry>
+          <cylinder radius="${coxa_radius}" length="${coxa_length}"/>
+        </geometry>
+        <material name="coxa_orange"/>
+      </visual>
+
+      <collision>
+        <origin xyz="${coxa_length/2} 0 0" rpy="0 ${pi/2} 0"/>
+        <geometry>
+          <cylinder radius="${coxa_radius}" length="${coxa_length}"/>
+        </geometry>
+      </collision>
+
+      <!-- Inertia is about the segment's centre of mass, which for a uniform
+           cylinder is its midpoint -- hence the same x offset. -->
+      <xacro:inertial_cylinder_x mass="${coxa_mass}"
+                                 radius="${coxa_radius}"
+                                 length="${coxa_length}">
+        <origin xyz="${coxa_length/2} 0 0" rpy="0 0 0"/>
+      </xacro:inertial_cylinder_x>
+    </link>
+
+    <joint name="${prefix}_coxa_joint" type="revolute">
+      <parent link="base_link"/>
+      <child  link="${prefix}_coxa_link"/>
+      <!-- This origin is the ONLY thing that differs between the six legs.
+           The yaw splays the leg outward; everything downstream is identical. -->
+      <origin xyz="${mount_x} ${mount_y} ${mount_z}" rpy="0 0 ${mount_yaw}"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="${coxa_lower}" upper="${coxa_upper}"
+             effort="${joint_effort}" velocity="${joint_velocity}"/>
+      <dynamics damping="${joint_damping}" friction="${joint_friction}"/>
+    </joint>
+
+    <!-- ==================================================================
+         FEMUR  --  the lift joint
+    ================================================================== -->
+    <link name="${prefix}_femur_link">
+      <visual>
+        <origin xyz="${femur_length/2} 0 0" rpy="0 ${pi/2} 0"/>
+        <geometry>
+          <cylinder radius="${femur_radius}" length="${femur_length}"/>
+        </geometry>
+        <material name="femur_blue"/>
+      </visual>
+
+      <collision>
+        <origin xyz="${femur_length/2} 0 0" rpy="0 ${pi/2} 0"/>
+        <geometry>
+          <cylinder radius="${femur_radius}" length="${femur_length}"/>
+        </geometry>
+      </collision>
+
+      <xacro:inertial_cylinder_x mass="${femur_mass}"
+                                 radius="${femur_radius}"
+                                 length="${femur_length}">
+        <origin xyz="${femur_length/2} 0 0" rpy="0 0 0"/>
+      </xacro:inertial_cylinder_x>
+    </link>
+
+    <joint name="${prefix}_femur_joint" type="revolute">
+      <parent link="${prefix}_coxa_link"/>
+      <child  link="${prefix}_femur_link"/>
+      <!-- Sits at the far end of the coxa: the "+X segment" rule in action. -->
+      <origin xyz="${coxa_length} 0 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="${femur_lower}" upper="${femur_upper}"
+             effort="${joint_effort}" velocity="${joint_velocity}"/>
+      <dynamics damping="${joint_damping}" friction="${joint_friction}"/>
+    </joint>
+
+    <!-- ==================================================================
+         TIBIA  --  the extend joint, carries the foot
+    ================================================================== -->
+    <link name="${prefix}_tibia_link">
+      <visual>
+        <origin xyz="${tibia_length/2} 0 0" rpy="0 ${pi/2} 0"/>
+        <geometry>
+          <cylinder radius="${tibia_radius}" length="${tibia_length}"/>
+        </geometry>
+        <material name="tibia_green"/>
+      </visual>
+
+      <collision>
+        <origin xyz="${tibia_length/2} 0 0" rpy="0 ${pi/2} 0"/>
+        <geometry>
+          <cylinder radius="${tibia_radius}" length="${tibia_length}"/>
+        </geometry>
+      </collision>
+
+      <xacro:inertial_cylinder_x mass="${tibia_mass}"
+                                 radius="${tibia_radius}"
+                                 length="${tibia_length}">
+        <origin xyz="${tibia_length/2} 0 0" rpy="0 0 0"/>
+      </xacro:inertial_cylinder_x>
+    </link>
+
+    <joint name="${prefix}_tibia_joint" type="revolute">
+      <parent link="${prefix}_femur_link"/>
+      <child  link="${prefix}_tibia_link"/>
+      <origin xyz="${femur_length} 0 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="${tibia_lower}" upper="${tibia_upper}"
+             effort="${joint_effort}" velocity="${joint_velocity}"/>
+      <dynamics damping="${joint_damping}" friction="${joint_friction}"/>
+    </joint>
+
+    <!-- ==================================================================
+         FOOT  --  fixed frame + contact sphere
+
+         WHY A SEPARATE FOOT LINK RATHER THAN JUST USING THE TIBIA TIP:
+         1. It gives the IK in Phase 7 an explicit target frame. "Put the foot
+            at (x,y,z)" becomes a TF lookup, not a hand-derived offset.
+         2. A SPHERE is the ideal contact primitive. Sphere-plane contact
+            produces a single, well-conditioned contact point. A cylinder or
+            box end-face produces a contact MANIFOLD that ODE resolves with
+            multiple jittering points -- the usual cause of a hexapod that
+            buzzes and slowly slides across the world.
+
+         NOTE: a <joint type="fixed"> is compiled away by most solvers, so
+         this costs essentially nothing in performance.
+    ================================================================== -->
+    <link name="${prefix}_foot_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <sphere radius="${foot_radius}"/>
+        </geometry>
+        <material name="foot_black"/>
+      </visual>
+
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <sphere radius="${foot_radius}"/>
+        </geometry>
+      </collision>
+
+      <!-- Small but NON-ZERO. A zero-mass link with a collision geometry is
+           a singular mass matrix waiting to happen; some solvers reject it
+           outright, others silently produce garbage contact forces. -->
+      <xacro:inertial_sphere mass="0.010" radius="${foot_radius}">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+      </xacro:inertial_sphere>
+    </link>
+
+    <joint name="${prefix}_foot_joint" type="fixed">
+      <parent link="${prefix}_tibia_link"/>
+      <child  link="${prefix}_foot_link"/>
+      <origin xyz="${tibia_length} 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <!-- ==================================================================
+         GAZEBO-SPECIFIC PROPERTIES
+
+         These <gazebo> tags are IGNORED by RViz and by every non-Gazebo
+         consumer of the URDF. They are stripped at parse time. That is what
+         lets one description file serve both simulation and hardware.
+
+         mu1/mu2 : ODE Coulomb friction coefficients in the two tangential
+                   contact directions. Feet need these HIGH -- with default
+                   friction the tripod gait will spin the legs and the body
+                   will not move, which looks like a gait bug but is a
+                   tribology problem.
+         kp / kd : contact stiffness and damping. kp too low = feet sink into
+                   the ground. kp too high = the contact becomes stiff and the
+                   solver rings. 1e6 / 1e2 is a sane starting point for a
+                   sub-2 kg robot.
+    ================================================================== -->
+    <gazebo reference="${prefix}_foot_link">
+      <mu1>${foot_mu}</mu1>
+      <mu2>${foot_mu}</mu2>
+      <kp>1000000.0</kp>
+      <kd>100.0</kd>
+      <minDepth>0.001</minDepth>
+      <maxVel>0.0</maxVel>
+      <material>Gazebo/Black</material>
+    </gazebo>
+
+    <gazebo reference="${prefix}_coxa_link">
+      <material>Gazebo/Orange</material>
+    </gazebo>
+    <gazebo reference="${prefix}_femur_link">
+      <material>Gazebo/Blue</material>
+    </gazebo>
+    <gazebo reference="${prefix}_tibia_link">
+      <material>Gazebo/Green</material>
+    </gazebo>
+
+  </xacro:macro>
+
+</robot>

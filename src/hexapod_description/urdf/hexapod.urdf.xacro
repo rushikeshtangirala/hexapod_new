@@ -1,0 +1,118 @@
+<?xml version="1.0"?>
+<!--
+  hexapod.urdf.xacro  --  TOP-LEVEL ROBOT DESCRIPTION
+  ============================================================================
+  This is the file every other package points at. It does exactly three things:
+    1. includes the parameter/macro definitions,
+    2. defines base_link (the body),
+    3. instantiates the leg macro six times.
+
+  Everything else is delegated. Keeping the top level this thin means you can
+  read the entire robot's structure in one screen -- which is the point.
+
+  LEG NAMING
+  ----------
+      lf  left  front        rf  right front
+      lm  left  middle       rm  right middle
+      lr  left  rear         rr  right rear
+
+  Two-letter prefixes, side first. This ordering matters more than it looks:
+  it makes `ros2 topic echo /joint_states` readable at a glance and it makes
+  the tripod groups in Phase 8 trivially expressible --
+
+      Tripod A = { lf, rm, lr }      Tripod B = { rf, lm, rr }
+
+  ...i.e. alternating sides, which is the defining property of a tripod gait:
+  three legs on the ground forming a stable support triangle containing the
+  centre of mass, at all times.
+
+  THE base_link CONVENTION
+  ------------------------
+  base_link is the robot's root frame and must be the single link with no
+  parent. REP-103 fixes its orientation: +X forward, +Y left, +Z up. Every
+  navigation, TF and control tool in ROS assumes this. Deviating (e.g. +X
+  right, as some CAD packages default to) does not error -- it just makes your
+  robot walk sideways relative to every velocity command it receives.
+============================================================================ -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="hexapod">
+
+  <!-- Order matters: properties and macros must be defined before use. -->
+  <xacro:include filename="$(find hexapod_description)/urdf/common_properties.xacro"/>
+  <xacro:include filename="$(find hexapod_description)/urdf/leg_macro.xacro"/>
+
+  <!-- ======================================================================
+       BODY
+  ====================================================================== -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${body_length} ${body_width} ${body_height}"/>
+      </geometry>
+      <material name="body_grey"/>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${body_length} ${body_width} ${body_height}"/>
+      </geometry>
+    </collision>
+
+    <xacro:inertial_box mass="${body_mass}"
+                        x="${body_length}" y="${body_width}" z="${body_height}">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:inertial_box>
+  </link>
+
+  <gazebo reference="base_link">
+    <material>Gazebo/DarkGrey</material>
+  </gazebo>
+
+  <!-- ======================================================================
+       LEGS  --  six instantiations of one macro
+
+       Left legs take POSITIVE y and POSITIVE yaw.
+       Right legs take NEGATIVE y and NEGATIVE yaw.
+       That sign flip is the entire difference between the sides.
+  ====================================================================== -->
+
+  <!-- ---- LEFT SIDE ---- -->
+  <xacro:hexapod_leg prefix="lf"
+                     mount_x="${mount_x_front}"
+                     mount_y="${mount_y_front}"
+                     mount_z="${mount_z}"
+                     mount_yaw="${mount_yaw_front}"/>
+
+  <xacro:hexapod_leg prefix="lm"
+                     mount_x="${mount_x_mid}"
+                     mount_y="${mount_y_mid}"
+                     mount_z="${mount_z}"
+                     mount_yaw="${mount_yaw_mid}"/>
+
+  <xacro:hexapod_leg prefix="lr"
+                     mount_x="${mount_x_rear}"
+                     mount_y="${mount_y_rear}"
+                     mount_z="${mount_z}"
+                     mount_yaw="${mount_yaw_rear}"/>
+
+  <!-- ---- RIGHT SIDE ---- -->
+  <xacro:hexapod_leg prefix="rf"
+                     mount_x="${mount_x_front}"
+                     mount_y="${-mount_y_front}"
+                     mount_z="${mount_z}"
+                     mount_yaw="${-mount_yaw_front}"/>
+
+  <xacro:hexapod_leg prefix="rm"
+                     mount_x="${mount_x_mid}"
+                     mount_y="${-mount_y_mid}"
+                     mount_z="${mount_z}"
+                     mount_yaw="${-mount_yaw_mid}"/>
+
+  <xacro:hexapod_leg prefix="rr"
+                     mount_x="${mount_x_rear}"
+                     mount_y="${-mount_y_rear}"
+                     mount_z="${mount_z}"
+                     mount_yaw="${-mount_yaw_rear}"/>
+
+</robot>

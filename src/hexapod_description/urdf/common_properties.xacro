@@ -1,0 +1,326 @@
+<?xml version="1.0"?>
+<!--
+  common_properties.xacro
+  ============================================================================
+  Single source of truth for every DIMENSION, MASS and LIMIT in the robot,
+  plus reusable inertia macros and materials.
+
+  WHY A SEPARATE PARAMETER FILE
+  -----------------------------
+  In a naive URDF, the femur length appears in at least four places per leg
+  (joint origin, visual origin, visual geometry, collision geometry) and there
+  are six legs. That is 24 places to edit, and 24 chances to miss one. A missed
+  one does not error -- it silently produces a robot whose kinematics disagree
+  with its appearance, and you will chase that ghost for a day.
+
+  Declaring each dimension ONCE as an xacro property and referencing it with
+  ${...} makes the model parametric: change one number, the whole robot and all
+  its inertias update consistently. This is the difference between a model and
+  a drawing.
+
+  UNITS: metres, kilograms, radians. Always. ROS has no unit system -- the
+  convention IS the contract (REP-103).
+============================================================================ -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ======================================================================
+       GEOMETRY  --  derived from mesh_audit.py, 2026-08-08
+
+       Source STLs (millimetres, laid flat on the XY plane by the exporter):
+         body test.stl        312.71 x 283.31 x 115.0
+         coxa new.stl         150.00 x  70.00 x  70.0
+         femur bottom.stl     116.63 x  45.00 x  31.7
+         femur top blah.stl   116.64 x  45.00 x   5.0   (cover plate)
+         tibia final.stl      150.00 x  20.00 x  20.0
+
+       *** READ THIS BEFORE TRUSTING THE LENGTHS ***
+       A bounding box measures the PART. The URDF needs the distance between
+       consecutive JOINT AXES. These differ whenever a servo horn, bearing
+       boss or clevis overhangs the pivot -- which is nearly always, typically
+       by 5-15 mm per joint.
+
+       Using bbox length as link length makes the leg systematically LONGER
+       than the real one. The robot still walks in simulation; it just walks
+       with a stride that will not transfer to hardware, and the Phase 7 IK
+       will hand you targets the real leg cannot reach.
+
+       ACTION: measure axis-to-axis in AutoCAD (DIST between the two pivot
+       centres) and replace the three lengths below. Everything else updates
+       automatically.
+  ====================================================================== -->
+
+  <!-- Body (chassis). Box approximation of the hexagonal frame. -->
+  <xacro:property name="body_length" value="0.3127"/>  <!-- along +X, forward -->
+  <xacro:property name="body_width"  value="0.2833"/>  <!-- along +Y, left    -->
+  <xacro:property name="body_height" value="0.1150"/>  <!-- along +Z, up      -->
+
+  <!-- Leg segment lengths. Each segment extends along its own +X axis.
+       Currently bbox-derived: CONFIRM AGAINST AXIS-TO-AXIS DISTANCE. -->
+  <xacro:property name="coxa_length"  value="0.1500"/>
+  <xacro:property name="femur_length" value="0.1166"/>
+  <xacro:property name="tibia_length" value="0.1500"/>
+
+  <!-- Segment radii for the primitive cylinders AND their inertia.
+       Taken as half the mean cross-section, so the cylinder's second moment
+       of area is a reasonable stand-in for the real part's. -->
+  <xacro:property name="coxa_radius"  value="0.0350"/>  <!-- 70 x 70 -->
+  <xacro:property name="femur_radius" value="0.0192"/>  <!-- 45 x 31.7 -->
+  <xacro:property name="tibia_radius" value="0.0100"/>  <!-- 20 x 20 -->
+
+  <!-- ----------------------------------------------------------------------
+       MASSES  --  computed from measured mesh volumes, 2026-08-08
+
+       mesh_audit.py reported these solid volumes once vertex welding was
+       fixed (4 of 5 meshes are watertight, so these are real numbers, not
+       estimates):
+
+         coxa new.stl        113 352 mm^3  = 1.1335e-4 m^3
+         femur bottom.stl     20 134 mm^3  = 2.0134e-5 m^3
+         femur top blah.stl   12 941 mm^3  = 1.2941e-5 m^3   (same link)
+         tibia final.stl      26 220 mm^3  = 2.6220e-5 m^3
+         body test.stl        not watertight -> volume unavailable
+
+       At solid PLA (1240 kg/m^3):
+         coxa   printed part  0.141 kg
+         femur  both plates   0.041 kg
+         tibia  printed part  0.033 kg
+
+       SERVO ALLOCATION -- a point that is easy to get backwards.
+       A servo's mass belongs to the link it is BOLTED TO, not the link it
+       drives. The tibia servo sits on the femur; the femur servo sits on the
+       coxa; the six coxa servos sit on the body. So:
+
+         coxa_link  = printed 0.141 + femur servo 0.060 = 0.201 kg
+         femur_link = printed 0.041 + tibia servo 0.060 = 0.101 kg
+         tibia_link = printed 0.033 + nothing           = 0.035 kg
+         base_link  = frame ~0.50 + 6 coxa servos 0.36
+                      + battery ~0.30 + electronics ~0.15 = ~1.31 kg
+
+       Total ~= 1.31 + 6 x 0.347 = 3.39 kg. That is consistent with the 3.0 kg
+       figure used in the torque check below, so the servo sizing conclusion
+       stands (and is in fact slightly conservative).
+
+       WHY MASS RATIOS MATTER MORE THAN ABSOLUTE MASS: the solver inverts the
+       mass matrix every step, and numerical conditioning depends on the RATIO
+       across each joint. Being uniformly 30% heavy is nearly harmless. One
+       link 50x wrong relative to its neighbour is what makes a robot detonate
+       on spawn.
+
+       REMAINING ACTION: these assume 100% infill. If you print at 30-40%,
+       the printed-part figures drop by roughly half. Weigh one printed coxa
+       and one tibia -- two numbers, five minutes, and the model becomes
+       measured rather than derived.
+  ---------------------------------------------------------------------- -->
+  <xacro:property name="body_mass"  value="1.310"/>
+  <xacro:property name="coxa_mass"  value="0.201"/>
+  <xacro:property name="femur_mass" value="0.101"/>
+  <xacro:property name="tibia_mass" value="0.035"/>
+
+  <!-- ======================================================================
+       LEG MOUNT GEOMETRY
+       Where each coxa joint axis sits on the body, and how far it is splayed.
+
+       The mount YAW is what makes left and right legs work from ONE macro
+       with no mirroring. The yaw rotates the entire leg chain into place, so
+       the femur/tibia axes stay identical in every leg's local frame. This is
+       the single most important structural decision in the model -- mirroring
+       joint axes instead is the classic way to end up with three legs that
+       bend the wrong way.
+  ====================================================================== -->
+       Values below are INFERRED from the body bounding box (312.7 x 283.3 mm,
+       so half-extents 156 x 142 mm) and from the CAD screenshot, which shows
+       middle legs projecting straight out and front/rear legs splayed at
+       roughly 45 degrees. They are a starting point, not a measurement.
+
+       ACTION: in AutoCAD, get the (x, y, z) of each of the six coxa pivot
+       centres relative to the body centroid. Six coordinates is all that is
+       missing for the model to be dimensionally exact. -->
+  <xacro:property name="mount_x_front" value="0.095"/>
+  <xacro:property name="mount_x_mid"   value="0.000"/>
+  <xacro:property name="mount_x_rear"  value="-0.095"/>
+
+  <xacro:property name="mount_y_front" value="0.070"/>
+  <xacro:property name="mount_y_mid"   value="0.100"/>
+  <xacro:property name="mount_y_rear"  value="0.070"/>
+
+  <!-- Height of the coxa axes relative to the body centre. Zero puts them on
+       the mid-plane. If your legs bolt to the underside of the top plate,
+       this becomes negative. -->
+  <xacro:property name="mount_z"       value="0.000"/>
+
+  <!-- Splay angles, radians. Front legs point 45 deg outward-forward,
+       middle legs straight out at 90 deg, rear legs 135 deg. -->
+  <xacro:property name="mount_yaw_front" value="${ 45.0 * pi / 180.0}"/>
+  <xacro:property name="mount_yaw_mid"   value="${ 90.0 * pi / 180.0}"/>
+  <xacro:property name="mount_yaw_rear"  value="${135.0 * pi / 180.0}"/>
+
+  <!-- ======================================================================
+       JOINT LIMITS
+       Four attributes, all mandatory for a revolute joint, all meaningful:
+
+         lower/upper : radians. Mechanical travel. Set these from the REAL
+                       servo horn range and any linkage interference, not from
+                       wishful thinking. ros2_control and MoveIt both enforce
+                       them; Gazebo applies a hard stop at them.
+         effort      : N*m. The maximum torque the actuator can apply. Gazebo
+                       SATURATES commands at this value. Set it too low and
+                       your robot collapses under its own weight and you blame
+                       the PID gains.
+         velocity    : rad/s. Maximum joint speed.
+
+       *** STATIC TORQUE CHECK -- DO THIS BEFORE YOU BUY SERVOS ***
+
+       Now that we have real dimensions, the required torque can be estimated,
+       and the result matters for your build:
+
+         Estimated total mass          ~3.0 kg      -> weight ~29.4 N
+         Tripod gait: 3 legs in stance -> ~9.8 N per supporting leg
+         Worst-case moment arm from the femur axis to the foot, leg extended:
+           coxa 0.150 + femur 0.117 = 0.267 m horizontal (tibia near vertical)
+         Peak femur joint torque  ~ 9.8 N x 0.25 m  ~= 2.45 N*m  (~25 kgf*cm)
+
+       An MG996R delivers ~1.0 N*m (10-11 kgf*cm) at STALL, and stall is not a
+       continuous rating -- derate to roughly half for sustained load. It is
+       therefore about 5x short for this robot. Realistic options are a
+       DS3218-class (~2.0 N*m) as a bare minimum, or an RDS5160-class
+       (~5-6 N*m) for genuine margin. Serial bus servos (Dynamixel AX/MX,
+       Feetech STS) additionally give you position FEEDBACK, which Phase 9
+       needs for a real hardware_interface -- a plain PWM hobby servo is
+       open-loop and cannot report where it actually is.
+
+       This is exactly the kind of finding a capstone report should contain:
+       the simulation drove a component-selection decision.
+
+       effort below is set to 5.0 N*m (RDS5160 class). If you commit to
+       smaller servos, LOWER IT -- an honestly-limited sim that sags is far
+       more useful than an optimistic one that lies to you.
+  ====================================================================== -->
+  <xacro:property name="coxa_lower"  value="${-60.0 * pi / 180.0}"/>
+  <xacro:property name="coxa_upper"  value="${ 60.0 * pi / 180.0}"/>
+  <xacro:property name="femur_lower" value="${-90.0 * pi / 180.0}"/>
+  <xacro:property name="femur_upper" value="${ 90.0 * pi / 180.0}"/>
+  <xacro:property name="tibia_lower" value="${-150.0 * pi / 180.0}"/>
+  <xacro:property name="tibia_upper" value="${ 30.0 * pi / 180.0}"/>
+
+  <xacro:property name="joint_effort"   value="5.0"/>
+  <xacro:property name="joint_velocity" value="6.0"/>
+
+  <!-- Joint damping and friction.
+       damping  : viscous, torque proportional to joint velocity [N*m*s/rad]
+       friction : static/Coulomb, a constant opposing torque [N*m]
+
+       These are NOT cosmetic. A completely undamped revolute chain is a
+       marginally-stable system for a discrete-time solver: energy injected by
+       a position controller has nowhere to go, and the joint oscillates or
+       diverges. A small positive damping term is what makes an 18-DOF chain
+       numerically well behaved. Start here; tune in Phase 5. -->
+  <xacro:property name="joint_damping"  value="0.05"/>
+  <xacro:property name="joint_friction" value="0.01"/>
+
+  <!-- Foot contact friction. mu1/mu2 are the ODE friction coefficients along
+       the two tangential contact directions. Feet need HIGH friction or the
+       tripod gait in Phase 8 will simply slip in place and go nowhere. -->
+  <xacro:property name="foot_radius"   value="0.015"/>
+  <xacro:property name="foot_mu"       value="1.2"/>
+
+  <!-- ======================================================================
+       MESH SWAP-IN  (Phase 2c -- not active yet)
+
+       Set use_meshes to true only AFTER the primitive model is verified in
+       Gazebo and under ros2_control. Cosmetics last: a mesh cannot fix a
+       kinematic bug, but it can very effectively hide one.
+
+       MESH_SCALE converts the STL's millimetres to the URDF's metres.
+       There is no unit tag in an STL -- this factor IS the unit declaration.
+
+       The offsets below re-origin each mesh. The exporter laid every part
+       flat on the XY plane at a scattered layout position, so each mesh needs
+       a pure translation to bring its JOINT AXIS to the link origin. These
+       are first estimates from the audited bounding boxes:
+         x : move the near end of the part to x = 0
+         y : move the part's centreline to y = 0
+         z : move mid-thickness to z = 0
+       They will be close but not exact, because the pivot is usually inset
+       from the end face. We refine them visually in RViz, one leg at a time.
+  ====================================================================== -->
+  <xacro:property name="use_meshes" value="false"/>
+  <xacro:property name="mesh_scale" value="0.001 0.001 0.001"/>
+
+  <!-- from bbox_min / bbox_centre reported by mesh_audit.py, in metres -->
+  <xacro:property name="body_mesh_offset"       value="-3.39256 -1.64091 -0.05750"/>
+  <xacro:property name="coxa_mesh_offset"       value="-2.46719 -1.71011 -0.03500"/>
+  <xacro:property name="femur_bot_mesh_offset"  value="-3.09609 -1.90328 -0.01585"/>
+  <xacro:property name="femur_top_mesh_offset"  value="-3.12645 -1.82622 -0.00250"/>
+  <xacro:property name="tibia_mesh_offset"      value="-2.40358 -1.24579 -0.01000"/>
+
+  <!-- ======================================================================
+       INERTIA MACROS
+       Closed-form inertia tensors for primitive solids, about the solid's own
+       centre of mass. These are EXACT, not estimates -- which is exactly why
+       building with primitives first gives a numerically sound simulation.
+
+       Recall what the tensor means: mass resists linear acceleration, the
+       inertia tensor resists ANGULAR acceleration, and it is direction
+       dependent. Off-diagonal terms are zero here because a box and a cylinder
+       are symmetric about their own principal axes.
+  ====================================================================== -->
+
+  <!-- Solid cuboid, sides x/y/z, about its centre. -->
+  <xacro:macro name="inertial_box" params="mass x y z *origin">
+    <inertial>
+      <xacro:insert_block name="origin"/>
+      <mass value="${mass}"/>
+      <inertia
+        ixx="${(1.0/12.0) * mass * (y*y + z*z)}" ixy="0.0" ixz="0.0"
+        iyy="${(1.0/12.0) * mass * (x*x + z*z)}" iyz="0.0"
+        izz="${(1.0/12.0) * mass * (x*x + y*y)}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- Solid cylinder whose axis of symmetry lies along X.
+       Ixx = (1/2) m r^2                (about the long axis: easy to spin)
+       Iyy = Izz = (1/12) m (3r^2 + L^2) (end over end: hard to spin)
+       That asymmetry is precisely the leg-swing dynamics we must get right. -->
+  <xacro:macro name="inertial_cylinder_x" params="mass radius length *origin">
+    <inertial>
+      <xacro:insert_block name="origin"/>
+      <mass value="${mass}"/>
+      <inertia
+        ixx="${0.5 * mass * radius * radius}" ixy="0.0" ixz="0.0"
+        iyy="${(1.0/12.0) * mass * (3.0*radius*radius + length*length)}" iyz="0.0"
+        izz="${(1.0/12.0) * mass * (3.0*radius*radius + length*length)}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- Solid sphere, about its centre. Used for the foot contact pad. -->
+  <xacro:macro name="inertial_sphere" params="mass radius *origin">
+    <inertial>
+      <xacro:insert_block name="origin"/>
+      <mass value="${mass}"/>
+      <inertia
+        ixx="${0.4 * mass * radius * radius}" ixy="0.0" ixz="0.0"
+        iyy="${0.4 * mass * radius * radius}" iyz="0.0"
+        izz="${0.4 * mass * radius * radius}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- ======================================================================
+       MATERIALS (RViz only -- Gazebo uses its own <gazebo><material> tags)
+  ====================================================================== -->
+  <material name="body_grey">
+    <color rgba="0.25 0.25 0.28 1.0"/>
+  </material>
+  <material name="coxa_orange">
+    <color rgba="0.90 0.45 0.10 1.0"/>
+  </material>
+  <material name="femur_blue">
+    <color rgba="0.15 0.45 0.80 1.0"/>
+  </material>
+  <material name="tibia_green">
+    <color rgba="0.20 0.65 0.35 1.0"/>
+  </material>
+  <material name="foot_black">
+    <color rgba="0.05 0.05 0.05 1.0"/>
+  </material>
+
+</robot>
