@@ -1,48 +1,50 @@
 <?xml version="1.0"?>
 <!--
-  hexapod.urdf.xacro  --  TOP-LEVEL ROBOT DESCRIPTION
-  ============================================================================
-  This is the file every other package points at. It does exactly three things:
-    1. includes the parameter/macro definitions,
+  hexapod.urdf.xacro : TOP LEVEL ROBOT DESCRIPTION
+  ==========================================================================
+  This is the file every other package points at. It does exactly three
+  things:
+    1. includes the parameter and macro definitions,
     2. defines base_link (the body),
     3. instantiates the leg macro six times.
 
-  Everything else is delegated. Keeping the top level this thin means you can
-  read the entire robot's structure in one screen -- which is the point.
+  Everything else is delegated. Keeping the top level this thin means you
+  can read the entire robot's structure in one screen, which is the point.
 
   LEG NAMING
-  ----------
+  ==========
       lf  left  front        rf  right front
       lm  left  middle       rm  right middle
       lr  left  rear         rr  right rear
 
-  Two-letter prefixes, side first. This ordering matters more than it looks:
-  it makes `ros2 topic echo /joint_states` readable at a glance and it makes
-  the tripod groups in Phase 8 trivially expressible --
+  Two letter prefixes, side first. This ordering matters more than it looks:
+  it makes `ros2 topic echo /joint_states` readable at a glance, and it
+  makes the tripod groups in Phase 8 trivially expressible:
 
-      Tripod A = { lf, rm, lr }      Tripod B = { rf, lm, rr }
+      Tripod A = { lf, rm, lr }        Tripod B = { rf, lm, rr }
 
-  ...i.e. alternating sides, which is the defining property of a tripod gait:
-  three legs on the ground forming a stable support triangle containing the
-  centre of mass, at all times.
+  That is, alternating sides, which is the defining property of a tripod
+  gait: three legs on the ground forming a stable support triangle
+  containing the centre of mass, at all times.
 
   THE base_link CONVENTION
-  ------------------------
+  ========================
   base_link is the robot's root frame and must be the single link with no
-  parent. REP-103 fixes its orientation: +X forward, +Y left, +Z up. Every
-  navigation, TF and control tool in ROS assumes this. Deviating (e.g. +X
-  right, as some CAD packages default to) does not error -- it just makes your
-  robot walk sideways relative to every velocity command it receives.
-============================================================================ -->
+  parent. REP 103 fixes its orientation: +X forward, +Y left, +Z up. Every
+  navigation, TF and control tool in ROS assumes this. Deviating (for
+  example +X right, as some CAD packages default to) does not error. It just
+  makes your robot walk sideways relative to every velocity command it
+  receives.
+==========================================================================  -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="hexapod">
 
   <!-- Order matters: properties and macros must be defined before use. -->
   <xacro:include filename="$(find hexapod_description)/urdf/common_properties.xacro"/>
   <xacro:include filename="$(find hexapod_description)/urdf/leg_macro.xacro"/>
 
-  <!-- ======================================================================
+  <!-- ====================================================================
        BODY
-  ====================================================================== -->
+  ==================================================================== -->
   <link name="base_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -69,15 +71,15 @@
     <material>Gazebo/DarkGrey</material>
   </gazebo>
 
-  <!-- ======================================================================
-       LEGS  --  six instantiations of one macro
+  <!-- ====================================================================
+       LEGS. Six instantiations of one macro.
 
        Left legs take POSITIVE y and POSITIVE yaw.
        Right legs take NEGATIVE y and NEGATIVE yaw.
        That sign flip is the entire difference between the sides.
-  ====================================================================== -->
+  ==================================================================== -->
 
-  <!-- ---- LEFT SIDE ---- -->
+  <!-- LEFT SIDE -->
   <xacro:hexapod_leg prefix="lf"
                      mount_x="${mount_x_front}"
                      mount_y="${mount_y_front}"
@@ -96,7 +98,7 @@
                      mount_z="${mount_z}"
                      mount_yaw="${mount_yaw_rear}"/>
 
-  <!-- ---- RIGHT SIDE ---- -->
+  <!-- RIGHT SIDE -->
   <xacro:hexapod_leg prefix="rf"
                      mount_x="${mount_x_front}"
                      mount_y="${-mount_y_front}"

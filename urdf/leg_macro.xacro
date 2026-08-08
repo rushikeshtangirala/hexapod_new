@@ -1,6 +1,0 @@
-This file was written to the wrong path by mistake and is not part of the build.
-The real leg macro lives at:
-
-    src/hexapod_description/urdf/leg_macro.xacro
-
-You can safely delete this file and the empty `urdf/` folder at the repo root.
