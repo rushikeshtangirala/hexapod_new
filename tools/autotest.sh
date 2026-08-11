@@ -260,6 +260,34 @@ dump_sim_failure() {
   timeout 10 ros2 node list 2>&1 | sed 's/^/   | /'
   timeout 10 ros2 service list 2>&1 | grep -i controller | sed 's/^/   | /' \
     || echo "   | no controller_manager services at all"
+
+  # ---- THE ALL-ZEROS CASE ------------------------------------------------
+  # If /odom and /joint_states BOTH report exactly zero while the gait node
+  # logged a robot standing at stance, the robot has not collapsed: a
+  # collapsed robot has non-zero angles, and a blown-up one has huge ones or
+  # NaN. Identity everywhere means the world got reset, or we are reading a
+  # different world from the one the gait is driving.
+  #
+  # These four probes separate those:
+  echo "   ---- is the model actually in the world ----"
+  timeout 10 ros2 service call /get_model_list gazebo_msgs/srv/GetModelList \
+    2>&1 | tail -6 | sed 's/^/   | /'
+  echo "   ---- raw /odom, one message ----"
+  timeout 8 ros2 topic echo /odom --once --field pose.pose 2>&1 \
+    | head -12 | sed 's/^/   | /'
+  echo "   ---- who publishes /odom and /joint_states ----"
+  # More than one publisher on either topic means a survivor from the
+  # previous configuration is still alive and we are averaging two worlds.
+  timeout 8 ros2 topic info /odom --verbose 2>&1 \
+    | grep -E "Publisher count|Node name" | sed 's/^/   | /'
+  timeout 8 ros2 topic info /joint_states --verbose 2>&1 \
+    | grep -E "Publisher count|Node name" | sed 's/^/   | /'
+  echo "   ---- how many gzserver processes are alive ----"
+  pgrep -af "[g]zserver" 2>&1 | sed 's/^/   | /' \
+    || echo "   | none: gzserver DIED during the run"
+  echo "   ---- did anything reset or eject the world ----"
+  grep -iE "reset|eject|nan|inf|destroy|removed" \
+    "/tmp/autotest_sim_${tag}.log" 2>/dev/null | tail -10 | sed 's/^/   | /'
   echo "   ----------------------------------------------"
 }
 
@@ -285,6 +313,26 @@ run_one() {
 
   cleanup
   bash "${TOOLS}/reset_sim.sh" >/dev/null 2>&1
+
+  # LONGER SETTLE BETWEEN CONFIGURATIONS.
+  #
+  # Config D failed on 2026-08-12 with /odom and /joint_states both reporting
+  # exactly zero, while the gait node's own log showed the robot standing
+  # correctly at stance. Identity on both streams is not a collapsed robot;
+  # it is the wrong world being read. The most likely cause is a survivor
+  # from the previous configuration: DDS discovery keeps stale endpoints for
+  # several seconds after a process dies, and gzserver can take longer than
+  # `pkill` returns to actually release port 11345 and tear its world down.
+  #
+  # Two seconds of teardown was not enough. This costs 6 seconds per run and
+  # removes a whole class of false result.
+  sleep 6
+  if pgrep -f "[g]zserver" >/dev/null 2>&1; then
+    echo "   WARNING: gzserver still alive after cleanup; waiting longer"
+    sleep 8
+    pkill -9 -f gzserver 2>/dev/null
+    sleep 3
+  fi
 
   echo "-- launching simulation (headless) ..."
   ros2 launch hexapod_bringup hexapod_sim.launch.py \
