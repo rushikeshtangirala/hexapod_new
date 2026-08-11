@@ -334,12 +334,18 @@ run_one() {
     sleep 3
   fi
 
-  echo "-- launching simulation (headless) ..."
+  # WATCH=1 runs with the Gazebo window open and leaves everything running at
+  # the end. Human eyes settle "is it standing, collapsed, or gone" in one
+  # second, and no amount of topic archaeology substitutes for looking.
+  local gui="false"
+  if [ "${WATCH:-0}" = "1" ]; then gui="true"; fi
+
+  echo "-- launching simulation (gui=${gui}) ..."
   ros2 launch hexapod_bringup hexapod_sim.launch.py \
       control_mode:="${mode}" \
       sim_profile:="${profile}" \
       fix_base:=false \
-      gui:=false \
+      gui:="${gui}" \
       rviz:=false \
       > "/tmp/autotest_sim_${tag}.log" 2>&1 &
   PIDS+=($!)
@@ -400,16 +406,58 @@ run_one() {
     tail -8 "/tmp/autotest_gait_${tag}.log" | sed 's/^/     /'
   fi
 
+  # ---- TIMELINE SAMPLER ---------------------------------------------------
+  # Config D reports the robot in the world, physics running, the gait node
+  # reading real joint angles at startup, and the measurement reading exactly
+  # zero for both /odom and /joint_states. Those cannot all be true at the
+  # same instant, so the missing datum is WHEN it changed.
+  #
+  # A snapshot every 2 s answers it directly:
+  #   zero from the first sample  -> plumbing. The measurement is reading
+  #                                  something other than this robot.
+  #   real, then zero at sample N -> the robot did something at a knowable
+  #                                  moment, and N tells us whether it was
+  #                                  the ramp finishing or the drive starting.
+  local tl="/tmp/autotest_timeline_${tag}.txt"
+  : > "${tl}"
+  (
+    for i in $(seq 1 16); do
+      od=$(timeout 3 ros2 topic echo /odom --once --field pose.pose.position 2>/dev/null \
+           | tr '\n' ' ' | sed 's/  */ /g')
+      js=$(timeout 3 ros2 topic echo /joint_states --once --field position 2>/dev/null \
+           | tr '\n' ' ' | cut -c1-70)
+      printf '  t+%-3ss  odom[%s]  joints[%s]\n' "$((i * 2))" "${od}" "${js}" >> "${tl}"
+      sleep 2
+    done
+  ) &
+  PIDS+=($!)
+
   echo "-- measuring ..."
   python3 "${TOOLS}/measure_walk.py" \
       --speed "${SPEED}" --baseline "${BASELINE}" \
       --drive "${DRIVE}" --settle "${SETTLE}"
   local rc=$?
 
+  echo ""
+  echo "   ---- timeline: /odom and /joint_states every 2 s ----"
+  cat "${tl}" 2>/dev/null | sed 's/^/   /'
+  echo "   -----------------------------------------------------"
+
   if [ "${rc}" = "17" ] || [ "${rc}" = "10" ]; then
     dump_sim_failure "${tag}"
     echo "   ---- gait node log, last 25 lines ----"
     tail -25 "/tmp/autotest_gait_${tag}.log" 2>/dev/null | sed 's/^/   | /'
+  fi
+
+  if [ "${WATCH:-0}" = "1" ]; then
+    echo ""
+    echo "   WATCH=1: leaving the simulation running so you can look at it."
+    echo "   Drive it by hand:"
+    echo "     ros2 run teleop_twist_keyboard teleop_twist_keyboard"
+    echo "   Stop everything when done:"
+    echo "     pkill -9 -f gzserver; pkill -9 -f gzclient; pkill -9 -f gait_node"
+    trap - EXIT INT TERM        # do not tear down on exit
+    return ${rc}
   fi
 
   cleanup
