@@ -150,5 +150,47 @@
       </camera>
     </gui>
 
+    <!-- ====================================================================
+         GAZEBO STATE PLUGIN : the simulator's own answer about where things
+         are, independent of any sensor plugin attached to the robot.
+
+         WHY THIS IS HERE
+         The p3d plugin in hexapod.gazebo.xacro publishes /odom, and in
+         control_mode:=effort with sim_profile:=physical it publishes an
+         identity pose forever: position (0,0,0), orientation (0,0,0,1),
+         from the first sample onward, before the startup ramp and before any
+         velocity command. Meanwhile /joint_states reports correct angles and
+         the model is present in the world. So p3d is not observing a robot
+         that fell over; it is not observing at all.
+
+         Three separate test runs were scored 'ROBOT NOT IN THE WORLD' on the
+         strength of that reading. All three verdicts were statements about
+         the sensor, and the configuration has in fact never been measured.
+
+         The lesson is the one already written across tools/: when a
+         measurement disagrees with everything else you can observe, suspect
+         the measurement. The mistake was continuing to interrogate p3d
+         instead of replacing it.
+
+         WHAT THIS GIVES
+           /model_states     pose and twist of every model, at update_rate
+           /link_states      same per link
+           /get_entity_state, /set_entity_state services
+
+         /model_states is ground truth straight from the physics engine, with
+         no plugin attached to the robot that can fail independently of it.
+         measure_walk.py falls back to it whenever /odom is unusable.
+
+         Cost: one message per update containing every model. With two models
+         that is negligible. Do not raise update_rate; 50 Hz is already twice
+         what any measurement here needs.
+    ==================================================================== -->
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros>
+        <namespace>/</namespace>
+      </ros>
+      <update_rate>50.0</update_rate>
+    </plugin>
+
   </world>
 </sdf>

@@ -102,6 +102,38 @@ class WalkMeasurer(Node):
             Odometry, "/odom", self.on_odom, qos
         )
 
+        # ------------------------------------------------------------------
+        # SECOND, INDEPENDENT SOURCE OF BODY POSE
+        #
+        # On 2026-08-12, control_mode:=effort with sim_profile:=physical was
+        # scored "ROBOT NOT IN THE WORLD" three runs in a row. /odom published
+        # position (0,0,0) and orientation (0,0,0,1) from the very first
+        # sample, before the ramp and before any command, while /joint_states
+        # reported correct angles and get_model_list confirmed the robot was
+        # present. p3d was not observing a fallen robot; it was not observing.
+        #
+        # All three verdicts were therefore statements about the sensor, and
+        # that configuration had never actually been measured. A measurement
+        # tool that can be silently wrong about its single input is worse than
+        # no tool, because it produces confident false results that get acted
+        # on.
+        #
+        # /model_states comes from libgazebo_ros_state.so, declared in the
+        # WORLD file rather than on the robot, so it cannot fail together with
+        # a robot-attached plugin. If /odom is unusable we fall back to it and
+        # say so loudly in the output.
+        self.ms_samples: list[tuple[float, float, float, float, float, float]] = []
+        self.ms_seen = False
+        try:
+            from gazebo_msgs.msg import ModelStates
+            self.ms_sub = self.create_subscription(
+                ModelStates, "/model_states", self.on_model_states, qos
+            )
+        except Exception as exc:                       # pragma: no cover
+            self.ms_sub = None
+            print(f"NOTE: /model_states unavailable ({exc}). "
+                  "Only /odom will be used, and it has been unreliable.")
+
         # WATCH THE LEGS TOO.
         #
         # Odometry alone cannot tell "legs cycling but feet slipping" apart
@@ -257,6 +289,34 @@ class WalkMeasurer(Node):
         self.samples.append((t, p.x, p.y, p.z, roll, pitch))
 
     # ------------------------------------------------------------------
+    def on_model_states(self, msg) -> None:
+        """
+        Body pose straight from the physics engine.
+
+        ModelStates carries no header, so the timestamp is taken from the
+        node's clock, which is sim time under use_sim_time. That is accurate
+        enough here: every measurement is a difference over seconds, not a
+        latency figure.
+
+        The model is found by name rather than index. Index is not stable,
+        ground_plane and hexapod can be listed in either order, and reading
+        the wrong index would give a perfectly steady pose belonging to the
+        floor. That would look exactly like a robot that never moved, which
+        is the failure mode this entire subscription exists to prevent.
+        """
+        self.ms_seen = True
+        if not self.recording:
+            return
+        try:
+            i = msg.name.index("hexapod")
+        except ValueError:
+            return
+        p = msg.pose[i].position
+        q = msg.pose[i].orientation
+        roll, pitch, _ = quat_to_rpy(q.x, q.y, q.z, q.w)
+        self.ms_samples.append((self.sim_now(), p.x, p.y, p.z, roll, pitch))
+
+    # ------------------------------------------------------------------
     def sim_now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
@@ -329,10 +389,12 @@ class WalkMeasurer(Node):
         self.recording = True
 
         mark0 = len(self.samples)
+        msmark0 = len(self.ms_samples)
         print(f"[1/3] Baseline, {self.baseline_s:.0f}s, NO command ...", flush=True)
         self.reset_joint_span()
         self.spin_for(self.baseline_s, publish=stop)
         mark1 = len(self.samples)
+        msmark1 = len(self.ms_samples)
         legs_idle = self.leg_travel_deg()
 
         print(f"[2/3] Driving forward at {self.speed:.3f} m/s for "
@@ -340,6 +402,7 @@ class WalkMeasurer(Node):
         self.reset_joint_span()
         self.spin_for(self.drive_s, publish=fwd)
         mark2 = len(self.samples)
+        msmark2 = len(self.ms_samples)
         legs_walk = self.leg_travel_deg()
         stride_walk = self.stride_deg()
 
@@ -347,10 +410,46 @@ class WalkMeasurer(Node):
         self.reset_joint_span()
         self.spin_for(self.settle_s, publish=stop)
         mark3 = len(self.samples)
+        msmark3 = len(self.ms_samples)
         held = self.mean_by_segment()
         ctrl = self.ctrl_mean_by_segment()
 
         self.recording = False
+
+        # ------------------------------------------------------------------
+        # CHOOSE THE POSE SOURCE, AND SAY WHICH ONE WAS USED.
+        #
+        # /odom is preferred because it is what the real robot will have to
+        # provide. But if p3d is dead it publishes a perfectly steady identity
+        # pose, which is indistinguishable from a robot that never moved and
+        # has already produced three confident false verdicts.
+        #
+        # The test is deliberately narrow: /odom is rejected ONLY when every
+        # single sample is exactly zero, which no real robot ever produces
+        # (it would have to be at the world origin, perfectly level, for the
+        # entire run). A genuinely stationary robot standing at z = 0.19 has
+        # a non-zero z and is not affected by this.
+        odom_dead = bool(self.samples) and all(
+            abs(x) < 1e-9 and abs(y) < 1e-9 and abs(z) < 1e-9
+            for _, x, y, z, _, _ in self.samples
+        )
+        if odom_dead and len(self.ms_samples) > 10:
+            print("\n" + "!" * 66)
+            print(" /odom IS DEAD: every sample exactly zero. The p3d plugin is")
+            print(" not observing the robot. Falling back to /model_states,")
+            print(" which comes from the physics engine itself.")
+            print(" Everything below is measured from /model_states.")
+            print("!" * 66)
+            self.samples = self.ms_samples
+            mark0, mark1, mark2, mark3 = msmark0, msmark1, msmark2, msmark3
+            self.pose_source = "/model_states (p3d was dead)"
+        elif odom_dead:
+            print("\n/odom is dead AND /model_states gave no usable samples.")
+            print("Body motion is UNMEASURED. Check that libgazebo_ros_state.so")
+            print("is loaded: the world file declares it.")
+            self.pose_source = "none"
+        else:
+            self.pose_source = "/odom"
 
         base = self.segment_stats(self.samples[mark0:mark1])
         walk = self.segment_stats(self.samples[mark1:mark2])
@@ -371,6 +470,12 @@ class WalkMeasurer(Node):
         # and we chased a missing model that was never missing. An instrument
         # has to be able to show its raw reading.
         print("\n--- raw odometry check ---")
+        # Always state the provenance. A number whose source is ambiguous is
+        # how three runs got scored against a sensor instead of a robot.
+        print(f"  pose source      : {getattr(self, 'pose_source', '/odom')}")
+        print(f"  /odom samples    : {len(self.samples)}")
+        print(f"  /model_states    : {len(self.ms_samples)} samples"
+              f"{' (never received)' if not self.ms_seen else ''}")
         print(f"  samples captured : {len(self.samples)}")
         if self.samples:
             t, x, y, z, r, p = self.samples[0]
