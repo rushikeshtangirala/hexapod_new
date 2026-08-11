@@ -196,9 +196,20 @@
        xacro at expansion time, so it must be a real filesystem path in the
        install space, which $(find ...) provides.
   ==================================================================== -->
+  <!-- The controller YAML follows sim_profile, because the gains are only
+       meaningful against a particular set of masses. repo mode's p=100 is
+       tuned against 1e-5 kg links; applying it to the measured model gives
+       legs that cannot hold the robot up. Applying our gains to the repo
+       model gives an absurdly stiff joint. They are not interchangeable and
+       must not be selected independently. -->
   <gazebo>
     <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
-      <parameters>$(find hexapod_control)/config/controllers.yaml</parameters>
+      <xacro:if value="${repo_mode}">
+        <parameters>$(find hexapod_control)/config/controllers_repo.yaml</parameters>
+      </xacro:if>
+      <xacro:unless value="${repo_mode}">
+        <parameters>$(find hexapod_control)/config/controllers.yaml</parameters>
+      </xacro:unless>
       <robot_param>robot_description</robot_param>
       <robot_param_node>robot_state_publisher</robot_param_node>
     </plugin>

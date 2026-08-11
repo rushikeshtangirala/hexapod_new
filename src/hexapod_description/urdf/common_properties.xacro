@@ -467,6 +467,78 @@
   <xacro:property name="body_mesh_nudge"  value="0 0 0"/>
 
   <!-- ====================================================================
+       SIM PROFILE OVERRIDES
+       ====================================================================
+       sim_profile:=physical   (default)  our measured model
+       sim_profile:=repo                  KevinOchs/hexapod_ros assumptions
+
+       WHAT repo MODE DOES, AND WHAT IT COSTS
+
+       hexapod_ros gives every link a mass of 1e-5 kg and an identity
+       inertia tensor. Nothing about that is physical. It works, and it
+       works for a specific reason worth understanding: with negligible
+       mass the gravity torque on each link is negligible, so a crude PID
+       holds any pose effortlessly, and with an inertia tensor of 1.0
+       kg m^2 against a 1e-5 kg link the rotational inertia is enormous
+       relative to every force acting on it. The model is so heavily
+       damped by its own numbers that it cannot become unstable. It is a
+       kinematic animation wearing a physics engine as a coat.
+
+       That is the trade being made here deliberately: a robot that
+       visibly walks, in exchange for a simulation that can no longer tell
+       you anything true about torques, contact forces, servo sizing or
+       whether the real machine would stand up.
+
+       EVERYTHING IS RECOVERABLE. This block only overrides values. Launch
+       without sim_profile:=repo and the measured model is back, untouched.
+       The physical numbers below are still the ones in the report.
+
+       These overrides must stay AFTER the definitions above; xacro takes
+       the last assignment.
+  ==================================================================== -->
+  <xacro:arg name="sim_profile" default="physical"/>
+  <xacro:property name="sim_profile" value="$(arg sim_profile)"/>
+  <xacro:property name="repo_mode"   value="${sim_profile == 'repo'}"/>
+
+  <xacro:if value="${repo_mode}">
+    <!-- Masses. hexapod_ros uses 0.00001 kg for every link including the
+         body. Kept non-zero for the same reason their model does: a zero
+         mass link carrying a collision shape is a singular mass matrix. -->
+    <xacro:property name="body_mass"  value="0.00001"/>
+    <xacro:property name="coxa_mass"  value="0.00001"/>
+    <xacro:property name="femur_mass" value="0.00001"/>
+    <xacro:property name="tibia_mass" value="0.00001"/>
+
+    <!-- Joint limits. Theirs are plus/minus pi on every joint, which
+         discards the mechanical range we derived. The IK still respects
+         the real limits via kinematics.py, so this only removes the URDF
+         as a second line of defence. -->
+    <xacro:property name="coxa_lower"  value="${-pi}"/>
+    <xacro:property name="coxa_upper"  value="${ pi}"/>
+    <xacro:property name="femur_lower" value="${-pi}"/>
+    <xacro:property name="femur_upper" value="${ pi}"/>
+    <xacro:property name="tibia_lower" value="${-pi}"/>
+    <xacro:property name="tibia_upper" value="${ pi}"/>
+
+    <!-- Their AX-12 style numbers: 6 N m, 0.524 rad/s. The velocity limit
+         is 11x lower than ours and is doing real work in their model, by
+         capping how fast a joint can be driven at all. -->
+    <xacro:property name="joint_effort"   value="6.0"/>
+    <xacro:property name="joint_velocity" value="0.524"/>
+
+    <!-- Their URDF carries no <dynamics> tag at all. -->
+    <xacro:property name="joint_damping"  value="0.0"/>
+    <xacro:property name="joint_friction" value="0.0"/>
+  </xacro:if>
+
+  <!-- Mesh collision geometry, as hexapod_ros uses. Left OFF even in repo
+       mode: contact is evaluated pairwise across 25 links every physics
+       step, so swapping primitives for a 9,572 triangle mesh costs three
+       orders of magnitude and buys nothing, and their meshes are not
+       watertight either. Set true if you want the comparison. -->
+  <xacro:property name="repo_mesh_collision" value="false"/>
+
+  <!-- ====================================================================
        INERTIA MACROS
        Closed form inertia tensors for primitive solids, about the solid's
        own centre of mass. These are EXACT, not estimates, which is exactly
@@ -480,15 +552,31 @@
   ==================================================================== -->
 
   <!-- Solid cuboid, sides x, y, z, about its centre. -->
+  <!-- Identity tensor, repo mode only. hexapod_ros writes
+       ixx=iyy=izz=1.0 on every single link regardless of its size or mass.
+       Against a 1e-5 kg link that is roughly 100,000 times too large, which
+       is the actual reason their simulation never destabilises: every link
+       is far too reluctant to rotate for anything to go wrong. -->
   <xacro:macro name="inertial_box" params="mass x y z *origin">
-    <inertial>
-      <xacro:insert_block name="origin"/>
-      <mass value="${mass}"/>
-      <inertia
-        ixx="${(1.0/12.0) * mass * (y*y + z*z)}" ixy="0.0" ixz="0.0"
-        iyy="${(1.0/12.0) * mass * (x*x + z*z)}" iyz="0.0"
-        izz="${(1.0/12.0) * mass * (x*x + y*y)}"/>
-    </inertial>
+    <xacro:if value="${repo_mode}">
+      <inertial>
+        <xacro:insert_block name="origin"/>
+        <mass value="${mass}"/>
+        <inertia ixx="1.0" ixy="0.0" ixz="0.0"
+                 iyy="1.0" iyz="0.0"
+                 izz="1.0"/>
+      </inertial>
+    </xacro:if>
+    <xacro:unless value="${repo_mode}">
+      <inertial>
+        <xacro:insert_block name="origin"/>
+        <mass value="${mass}"/>
+        <inertia
+          ixx="${(1.0/12.0) * mass * (y*y + z*z)}" ixy="0.0" ixz="0.0"
+          iyy="${(1.0/12.0) * mass * (x*x + z*z)}" iyz="0.0"
+          izz="${(1.0/12.0) * mass * (x*x + y*y)}"/>
+      </inertial>
+    </xacro:unless>
   </xacro:macro>
 
   <!-- Solid cylinder whose axis of symmetry lies along X.
@@ -497,26 +585,48 @@
        That asymmetry is precisely the leg swing dynamics we must get
        right. -->
   <xacro:macro name="inertial_cylinder_x" params="mass radius length *origin">
-    <inertial>
-      <xacro:insert_block name="origin"/>
-      <mass value="${mass}"/>
-      <inertia
-        ixx="${0.5 * mass * radius * radius}" ixy="0.0" ixz="0.0"
-        iyy="${(1.0/12.0) * mass * (3.0*radius*radius + length*length)}" iyz="0.0"
-        izz="${(1.0/12.0) * mass * (3.0*radius*radius + length*length)}"/>
-    </inertial>
+    <xacro:if value="${repo_mode}">
+      <inertial>
+        <xacro:insert_block name="origin"/>
+        <mass value="${mass}"/>
+        <inertia ixx="1.0" ixy="0.0" ixz="0.0"
+                 iyy="1.0" iyz="0.0"
+                 izz="1.0"/>
+      </inertial>
+    </xacro:if>
+    <xacro:unless value="${repo_mode}">
+      <inertial>
+        <xacro:insert_block name="origin"/>
+        <mass value="${mass}"/>
+        <inertia
+          ixx="${0.5 * mass * radius * radius}" ixy="0.0" ixz="0.0"
+          iyy="${(1.0/12.0) * mass * (3.0*radius*radius + length*length)}" iyz="0.0"
+          izz="${(1.0/12.0) * mass * (3.0*radius*radius + length*length)}"/>
+      </inertial>
+    </xacro:unless>
   </xacro:macro>
 
   <!-- Solid sphere about its centre. Used for the foot contact pad. -->
   <xacro:macro name="inertial_sphere" params="mass radius *origin">
-    <inertial>
-      <xacro:insert_block name="origin"/>
-      <mass value="${mass}"/>
-      <inertia
-        ixx="${0.4 * mass * radius * radius}" ixy="0.0" ixz="0.0"
-        iyy="${0.4 * mass * radius * radius}" iyz="0.0"
-        izz="${0.4 * mass * radius * radius}"/>
-    </inertial>
+    <xacro:if value="${repo_mode}">
+      <inertial>
+        <xacro:insert_block name="origin"/>
+        <mass value="0.00001"/>
+        <inertia ixx="1.0" ixy="0.0" ixz="0.0"
+                 iyy="1.0" iyz="0.0"
+                 izz="1.0"/>
+      </inertial>
+    </xacro:if>
+    <xacro:unless value="${repo_mode}">
+      <inertial>
+        <xacro:insert_block name="origin"/>
+        <mass value="${mass}"/>
+        <inertia
+          ixx="${0.4 * mass * radius * radius}" ixy="0.0" ixz="0.0"
+          iyy="${0.4 * mass * radius * radius}" iyz="0.0"
+          izz="${0.4 * mass * radius * radius}"/>
+      </inertial>
+    </xacro:unless>
   </xacro:macro>
 
   <!-- ====================================================================

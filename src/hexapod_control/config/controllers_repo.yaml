@@ -1,0 +1,256 @@
+# =============================================================================
+# controllers_repo.yaml : sim_profile:=repo
+# =============================================================================
+# Selected automatically by hexapod.ros2_control.xacro when the model is built
+# with sim_profile:=repo. Do not mix: these gains belong to the 1e-5 kg model.
+#
+# WHAT THIS MIRRORS
+# hexapod_ros gives every joint its own effort_controllers/JointPositionController
+# with pid {p: 100.0, i: 0.0, d: 0.0}. That controller type does not exist in
+# ROS 2 -- effort_controllers here provides only JointGroupEffortController,
+# which is raw torque with no position loop. The ROS 2 equivalent of "PID
+# position loop closed over an effort interface" is joint_trajectory_controller
+# with command_interfaces: [effort] and a gains block, which is what we already
+# use. So the CONTROLLER is unchanged and only the GAINS are mirrored.
+#
+# WHY p=100 IS ENOUGH THERE AND NOT HERE
+# Gravity torque scales with mass. At 1e-5 kg per link the static load a joint
+# must hold is on the order of 1e-5 N m, so p=100 delivers thousands of times
+# the torque required and the joint tracks essentially perfectly. Against our
+# measured 1.31 kg body the same gain gives a leg that folds under the robot.
+# The gain is not "better" or "worse"; it is matched to a different machine.
+#
+# i and d are zero because theirs are zero. With no integral term there is a
+# permanent steady-state droop under any constant load -- invisible at 1e-5 kg,
+# which is the only reason they get away with it.
+# =============================================================================
+
+controller_manager:
+  ros__parameters:
+
+    # Control loop rate, Hz. Physics runs at 1000 Hz (max_step_size 0.001),
+    # so 200 Hz is one control update per 5 physics steps.
+    #
+    # Setting this above the physics rate is pointless: the extra writes are
+    # overwritten before anything reads them. 200 Hz is also honest about
+    # hardware, where a serial servo bus manages 50 to 200 Hz depending on
+    # baud rate and chain length.
+    update_rate: 200
+    use_sim_time: true
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # EFFORT path. joint_trajectory_controller is used rather than a simple
+    # forward controller because it is the only stock ros2_controller that
+    # closes a POSITION loop over an EFFORT interface. We feed it single
+    # trajectory points at 50 Hz; it runs the PID that turns position error
+    # into joint torque.
+    leg_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    # POSITION path.
+    #
+    # This was position_controllers/JointGroupPositionController, and that
+    # was the cause of the robot being catapulted out of the world on spawn.
+    #
+    # THE FAILURE, IN FULL, BECAUSE IT IS SUBTLE
+    # <param name="initial_value"> applies to the STATE interface only. The
+    # gazebo log shows it under "State:" and never under "Command:". So the
+    # joint is PLACED at its stance angle, but the position COMMAND buffer
+    # starts at zero.
+    #
+    # A ForwardCommandController writes nothing until it receives a message,
+    # so on the very first physics step GazeboSystem reads that zeroed
+    # command buffer and teleports all 18 joints from the stance pose to
+    # 0 rad. The legs snap straight out sideways while the feet are loaded,
+    # and the contact solver ejects the robot at enormous speed.
+    #
+    # It explains every observation we collected:
+    #   controllers:=false  -> stable   (nothing writes, no teleport)
+    #   fix_base:=true      -> stable   (base welded, teleport cannot move it)
+    #   stance femur 69.9   -> drift    (smaller teleport)
+    #   stance femur 92.8   -> ejection (larger teleport)
+    #
+    # JointTrajectoryController does not have this behaviour: on activation
+    # it READS THE CURRENT JOINT STATE and holds it. There is no zero to jump
+    # to. It also gives the two control modes one shape, so the gait node
+    # publishes the same message type either way.
+    #
+    # No PID gains here: over a position command interface JTC passes the
+    # interpolated setpoint straight through.
+    leg_position_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+
+# =============================================================================
+# EFFORT controller
+# =============================================================================
+leg_trajectory_controller:
+  ros__parameters:
+    joints:
+      - lf_coxa_joint
+      - lf_femur_joint
+      - lf_tibia_joint
+      - lm_coxa_joint
+      - lm_femur_joint
+      - lm_tibia_joint
+      - lr_coxa_joint
+      - lr_femur_joint
+      - lr_tibia_joint
+      - rf_coxa_joint
+      - rf_femur_joint
+      - rf_tibia_joint
+      - rm_coxa_joint
+      - rm_femur_joint
+      - rm_tibia_joint
+      - rr_coxa_joint
+      - rr_femur_joint
+      - rr_tibia_joint
+
+    command_interfaces:
+      - effort
+
+    state_interfaces:
+      - position
+      - velocity
+
+    # We stream one trajectory point per control cycle rather than sending a
+    # long trajectory once, because the gait is regenerated continuously from
+    # the velocity command. Each new message replaces the previous one.
+    # Without this, JTC rejects every point for having a non-zero velocity at
+    # the trajectory end.
+    allow_nonzero_velocity_at_trajectory_end: true
+
+    # Closed loop: the PID acts on measured state. open_loop_control:true
+    # would integrate the commanded trajectory instead and never correct for
+    # actual load, which defeats the point of moving to effort control.
+    open_loop_control: false
+
+    constraints:
+      stopped_velocity_tolerance: 0.05
+      goal_time: 0.0
+
+    # =========================================================================
+    # PID GAINS
+    #
+    # These convert position error into joint torque. Sizing rather than
+    # guessing:
+    #
+    #   p : torque per radian of error. The femur must hold about 2.45 N*m
+    #       in stance (see the static torque check in
+    #       common_properties.xacro). Accepting ~0.006 rad of droop under
+    #       that load gives p = 2.45 / 0.006 = 408, so 500 is the right
+    #       order of magnitude. Too low and the robot visibly sags; too high
+    #       and it oscillates.
+    #
+    #   d : damping. Critical damping is d = 2*sqrt(p*J). With effective
+    #       joint inertia J of roughly 0.005 kg*m^2 for a femur carrying a
+    #       tibia, that is 2*sqrt(500*0.005) = 3.2, so 6 is comfortably
+    #       overdamped. Prefer overdamped here: an oscillating leg pumps
+    #       energy into the contacts and undoes everything.
+    #
+    #   i : removes steady-state droop, which matters because the legs bear
+    #       weight continuously. i_clamp bounds the wind-up so a leg that is
+    #       briefly blocked does not store torque and then release it.
+    #
+    # Gains differ by SEGMENT, not by leg, because all six legs are
+    # identical. Coxa carries little load (it swings the leg horizontally),
+    # femur carries the most, tibia is in between.
+    #
+    # TUNING ORDER if the robot misbehaves:
+    #   sags under its own weight     -> raise p on femur and tibia
+    #   visibly oscillates or buzzes  -> raise d, then lower p
+    #   slowly settles low but steady -> raise i
+    # Change one segment at a time and watch /joint_states against the
+    # commanded trajectory.
+    # =========================================================================
+    # REVISION 2, after observing "wiggles a bit and sinks".
+    #
+    # That symptom is a PID too soft to hold the robot's weight. A PID needs
+    # error before it produces torque, so a joint under constant load settles
+    # at whatever error generates the required holding torque. With p = 500
+    # and 2.45 N*m needed, that droop is 2.45/500 = 0.005 rad per joint. It
+    # accumulates through coxa, femur and tibia and across all six legs, so
+    # the body sits noticeably low and the whole robot feels soft. Soft legs
+    # then let the body rock, and rocking on friction contacts creeps.
+    #
+    # Tripling p cuts the droop to under 0.002 rad per joint. d is raised
+    # with it, because the stability margin depends on the RATIO: critical
+    # damping is 2*sqrt(p*J), so raising p without raising d moves the joint
+    # towards underdamped and starts it ringing.
+    #
+    # These are still not saturating: at p = 1500, the 5 N*m effort limit is
+    # reached at 0.0033 rad of error, which is a third of a degree. The
+    # joints are stiff but the torque request remains physically plausible
+    # for the RDS5160-class servo the torque analysis called for.
+    gains:
+      lf_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
+      lf_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
+      lf_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
+      lm_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
+      lm_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
+      lm_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
+      lr_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
+      lr_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
+      lr_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
+      rf_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
+      rf_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
+      rf_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
+      rm_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
+      rm_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
+      rm_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
+      rr_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
+      rr_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
+      rr_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
+
+
+# =============================================================================
+# POSITION controller
+# =============================================================================
+# Commanded via /leg_position_controller/joint_trajectory (JointTrajectory),
+# not a Float64MultiArray. Joint order below is the order of values in each
+# trajectory point.
+leg_position_controller:
+  ros__parameters:
+    command_interfaces:
+      - position
+
+    state_interfaces:
+      - position
+      - velocity
+
+    # We stream one point per control cycle, each replacing the last, because
+    # the gait is regenerated continuously. Without this JTC rejects every
+    # point for having non-zero velocity at the trajectory end.
+    allow_nonzero_velocity_at_trajectory_end: true
+    open_loop_control: false
+
+    constraints:
+      stopped_velocity_tolerance: 0.05
+      goal_time: 0.0
+
+    joints:
+      - lf_coxa_joint
+      - lf_femur_joint
+      - lf_tibia_joint
+      - lm_coxa_joint
+      - lm_femur_joint
+      - lm_tibia_joint
+      - lr_coxa_joint
+      - lr_femur_joint
+      - lr_tibia_joint
+      - rf_coxa_joint
+      - rf_femur_joint
+      - rf_tibia_joint
+      - rm_coxa_joint
+      - rm_femur_joint
+      - rm_tibia_joint
+      - rr_coxa_joint
+      - rr_femur_joint
+      - rr_tibia_joint
+
+
+joint_state_broadcaster:
+  ros__parameters:
+    use_local_topics: false

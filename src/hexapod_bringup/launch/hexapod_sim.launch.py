@@ -132,6 +132,7 @@ def generate_launch_description() -> LaunchDescription:
             " fix_base:=", LaunchConfiguration("fix_base"),
             " fix_base_height:=", LaunchConfiguration("fix_base_height"),
             " control_mode:=", LaunchConfiguration("control_mode"),
+            " sim_profile:=", LaunchConfiguration("sim_profile"),
         ]),
         value_type=str,
     )
@@ -406,6 +407,28 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("control_mode", default_value="position",
                               description="position (validated) or effort "
                                           "(free base, gains being tuned)."),
+
+        # ------------------------------------------------------------------
+        # sim_profile: which set of physical assumptions to build the model
+        # with. Full rationale in common_properties.xacro.
+        #
+        #   physical  our measured masses, closed-form inertias, real joint
+        #             limits, our tuned gains. The model the report is about.
+        #
+        #   repo      KevinOchs/hexapod_ros assumptions: 1e-5 kg links,
+        #             identity inertia tensors, plus/minus pi joint limits,
+        #             p=100 i=0 d=0. Non-physical by construction, and
+        #             stable precisely because of that. Use it to get a
+        #             robot that walks on screen; do not quote a torque,
+        #             a contact force or a servo requirement from it.
+        #
+        # The controller YAML follows this automatically. The two sets of
+        # gains are not interchangeable.
+        # ------------------------------------------------------------------
+        DeclareLaunchArgument("sim_profile", default_value="physical",
+                              description="physical (measured model) or repo "
+                                          "(hexapod_ros assumptions, "
+                                          "non-physical but stable)."),
 
         DeclareLaunchArgument("fix_base", default_value="true",
                               description="Weld base_link to the world. "
