@@ -311,5 +311,33 @@ causes that produce identical symptoms.
 | Tripod gait | done, verified offline and running under load |
 | Hardware preparation | architecture in place, plugin stub outstanding |
 
-Open item: body translation with a free base. Cause identified and proven,
-fix implemented (`control_mode:=effort`), gains still to tune.
+Open item: body translation with a free base.
+
+**2026-08-11 — the primary cause was not the control interface.** The stance
+phase swept each foot the wrong way. `stride_vector` returns a backward
+displacement, and `foot_target` then applied it as `+stride/2 -> -stride/2`,
+negating it a second time. At a commanded 0.08 m/s the planted foot was being
+driven *forwards* through the body frame at 0.08 m/s while the body moved
+forwards at 0.08 m/s, so every loaded foot was dragged over the ground at
+0.16 m/s in the wrong direction. Three legs doing that simultaneously is the
+"cycles its legs, slides around, does not travel" behaviour in full.
+
+`verify_gait.py` passed throughout, because its non-slip check compared the
+*magnitude* of stance travel against the *magnitude* of body travel. A sign
+error is invisible to a magnitude. The check is now a signed vector comparison
+and there is a separate explicit assertion that stance pushes the robot in the
+commanded direction.
+
+Fixed at the same time, all verified offline:
+
+* swing profile changed from a cycloid to a cubic Hermite whose end slopes
+  match the stance, so the foot lands stationary with respect to the **ground**
+  rather than with respect to the body (see `gait.py` section 5)
+* first-order filter on the velocity command, so a teleop step no longer
+  translates the three loaded stance feet in one control tick
+* stopping now runs the cycle out instead of freezing the clock, which used to
+  leave three feet in the air whenever the operator released the key mid-swing
+* per-foot contact sensors added to `leg_macro.xacro`, off by default
+
+Still open, and now genuinely the next thing: effort-mode PID gains.
+

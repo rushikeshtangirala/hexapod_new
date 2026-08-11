@@ -363,6 +363,29 @@ class WalkMeasurer(Node):
         expected = self.speed * walk["dt"]
         efficiency = walk["dx"] / expected if expected > 1e-9 else 0.0
 
+        # RAW ODOMETRY, PRINTED BEFORE ANY INTERPRETATION.
+        #
+        # Every derived number below depends on /odom being truthful. When it
+        # was not -- publishing zeros while the robot stood correctly in
+        # Gazebo -- the summary confidently reported "ROBOT NOT IN THE WORLD"
+        # and we chased a missing model that was never missing. An instrument
+        # has to be able to show its raw reading.
+        print("\n--- raw odometry check ---")
+        print(f"  samples captured : {len(self.samples)}")
+        if self.samples:
+            t, x, y, z, r, p = self.samples[0]
+            print(f"  first  x={x:+.4f} y={y:+.4f} z={z:+.4f}  t={t:.3f}")
+            t, x, y, z, r, p = self.samples[-1]
+            print(f"  last   x={x:+.4f} y={y:+.4f} z={z:+.4f}  t={t:.3f}")
+            allz = all(abs(s[1]) < 1e-9 and abs(s[2]) < 1e-9 and abs(s[3]) < 1e-9
+                       for s in self.samples)
+            if allz:
+                print("  >> EVERY sample is exactly zero. /odom is not reporting")
+                print("     the robot's pose. This is a SENSOR fault, not a")
+                print("     robot fault -- check the p3d plugin in")
+                print("     hexapod.gazebo.xacro loaded, and that nothing else")
+                print("     is publishing an empty /odom.")
+
         print("\n" + "=" * 66)
         print(" RESULT")
         print("=" * 66)
@@ -437,6 +460,21 @@ class WalkMeasurer(Node):
     # ------------------------------------------------------------------
     def judge(self, base: dict, walk: dict, efficiency: float,
               legs_walk: float = -1.0, stride_walk: float = -1.0):
+        # ROBOT ABSENT IS CHECKED BEFORE EVERYTHING.
+        #
+        # This used to sit below the leg-motion checks, so a run with no
+        # robot at all reported "LEGS NOT MOVING -- command never reached the
+        # gait" and never dumped the simulation log. The legs were not moving
+        # because there were no legs. Ordering matters in a verdict chain:
+        # the most fundamental failure has to be tested first, or a
+        # downstream symptom claims the diagnosis.
+        if abs(walk["z_mean"]) < 0.05:
+            return ("ROBOT NOT IN THE WORLD",
+                    f"  Body height reads {walk['z_mean']:.4f} m and the joints\n"
+                    "  report exactly 0. The model is missing, destroyed, or\n"
+                    "  never spawned. Nothing about the gait is judgeable from\n"
+                    "  this run.", 17)
+
         # STRIDE FIRST. A hexapod propels itself with the coxa joints; if
         # they are not swinging there is no propulsion to evaluate, and any
         # conclusion about grip or gait quality would be about a robot that

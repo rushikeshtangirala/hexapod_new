@@ -159,30 +159,51 @@ print(f"  worst discontinuity {worst_jump:.3e} m over dphase={EPS}")
 # ---------------------------------------------------------------------------
 print("\n4. Touchdown and lift-off horizontal velocity")
 # ---------------------------------------------------------------------------
+# THE CRITERION IS THE WORLD FRAME, NOT THE BODY FRAME.
+#
+# This test used to require the foot's horizontal speed to be near zero in
+# the BODY frame at touchdown. That is the wrong condition and it is what
+# licensed the cycloid. The body is moving; a foot stationary with respect to
+# the body is moving at full body speed with respect to the ground.
+#
+# World velocity of the foot = body velocity + foot velocity in body frame.
+# Non-slip demands that be zero at touchdown, throughout stance, and again at
+# lift-off.
 leg = LEGS[0]
 duty = params.duty_factor
 dp = 1e-4
 
 
-def horiz_speed(p0: float) -> float:
+def body_frame_vel(p0: float) -> tuple[float, float]:
     f0, _ = foot_target(leg, params, p0, VX, VY, WZ)
     f1, _ = foot_target(leg, params, p0 + dp, VX, VY, WZ)
     dt = dp * params.cycle_time
-    return math.hypot(f1[0] - f0[0], f1[1] - f0[1]) / dt
+    return ((f1[0] - f0[0]) / dt, (f1[1] - f0[1]) / dt)
 
 
-v_touchdown = horiz_speed(1.0 - 2 * dp)     # end of swing
-v_liftoff = horiz_speed(duty + dp)          # start of swing
-v_stance = horiz_speed(duty * 0.5)          # mid stance
+def world_speed(p0: float) -> float:
+    """Foot speed over the ground. Zero is the non-slip condition."""
+    bx, by = body_frame_vel(p0)
+    # This leg's nominal position, for the yaw-rate contribution.
+    nx, ny, _ = nominal_foot(leg, params)
+    return math.hypot(bx + (VX - WZ * ny), by + (VY + WZ * nx))
 
-check(v_touchdown < 0.1 * max(v_stance, 1e-9),
-      "touchdown horizontal velocity near zero",
-      f"{v_touchdown:.4f} m/s vs stance {v_stance:.4f} m/s")
-check(v_liftoff < 0.1 * max(v_stance, 1e-9),
-      "lift-off horizontal velocity near zero",
-      f"{v_liftoff:.4f} m/s")
-print(f"  stance {v_stance:.4f} m/s   touchdown {v_touchdown:.5f} m/s   "
-      f"lift-off {v_liftoff:.5f} m/s")
+
+v_touchdown = world_speed(1.0 - 2 * dp)     # end of swing
+v_liftoff = world_speed(duty + dp)          # start of swing
+v_midstance = world_speed(duty * 0.5)       # mid stance
+v_ref = math.hypot(VX, VY) + abs(WZ) * params.stance_radius
+
+check(v_midstance < 1e-6, "stance foot is stationary over the GROUND",
+      f"{v_midstance:.6f} m/s, should be 0 (body speed {v_ref:.4f})")
+check(v_touchdown < 0.02 * max(v_ref, 1e-9),
+      "touchdown world-frame velocity near zero",
+      f"{v_touchdown:.5f} m/s vs body speed {v_ref:.4f} m/s")
+check(v_liftoff < 0.02 * max(v_ref, 1e-9),
+      "lift-off world-frame velocity near zero",
+      f"{v_liftoff:.5f} m/s vs body speed {v_ref:.4f} m/s")
+print(f"  body {v_ref:.4f} m/s   mid-stance {v_midstance:.6f} m/s   "
+      f"touchdown {v_touchdown:.6f} m/s   lift-off {v_liftoff:.6f} m/s")
 
 # ---------------------------------------------------------------------------
 print("\n5. Ground clearance and stance-foot height")
@@ -208,19 +229,38 @@ print("\n6. Non-slip: stance travel equals body travel")
 # ---------------------------------------------------------------------------
 # Over the full stance phase the foot must move backwards through the body
 # frame by exactly the distance the body moves forwards.
+# THIS CHECK IS SIGNED. It used to compare math.dist(...) against the
+# expected distance -- two magnitudes. A magnitude cannot see a direction,
+# and for eight months it did not: the stance swept the foot FORWARD through
+# the body frame instead of backward, so every loaded foot was dragged over
+# the ground at 2x commanded speed in the wrong direction, and this test
+# passed the whole time. Compare vectors, not lengths.
 stance_time = params.cycle_time * params.duty_factor
-expected = math.hypot(VX, VY) * stance_time
 
 f_start, _ = foot_target(leg, params, 0.0, VX, VY, WZ)
 f_end, _ = foot_target(leg, params, duty - 1e-9, VX, VY, WZ)
-travelled = math.dist(f_start, f_end)
+travel = (f_end[0] - f_start[0], f_end[1] - f_start[1])
 
-check(abs(travelled - expected) < 1e-6, "stance travel matches body travel",
-      f"foot moved {travelled:.5f} m, body moves {expected:.5f} m")
-print(f"  stride {travelled * 1000:.1f} mm per stance "
-      f"(body travels {expected * 1000:.1f} mm)")
+# A planted foot must move through the body frame at exactly minus the
+# velocity of that body-fixed point.
+nx, ny, _ = nominal_foot(leg, params)
+expected = (-(VX - WZ * ny) * stance_time, -(VY + WZ * nx) * stance_time)
 
-speed_check = travelled / stance_time
+err = math.hypot(travel[0] - expected[0], travel[1] - expected[1])
+check(err < 1e-6, "stance travel matches body travel IN DIRECTION AND SIZE",
+      f"foot swept ({travel[0]:+.5f}, {travel[1]:+.5f}) m, "
+      f"needs ({expected[0]:+.5f}, {expected[1]:+.5f}) m")
+print(f"  stance sweep ({travel[0] * 1000:+.1f}, {travel[1] * 1000:+.1f}) mm "
+      f"vs required ({expected[0] * 1000:+.1f}, {expected[1] * 1000:+.1f}) mm")
+
+# Stated separately because it is the property a reader actually cares about
+# and it fails loudly rather than as a small residual.
+check(travel[0] * VX <= 0.0 or abs(VX) < 1e-12,
+      "stance sweeps the foot BACKWARD when walking forward",
+      f"foot swept {travel[0]:+.5f} m in x while commanded vx={VX:+.3f}; "
+      "positive product means the legs are pushing the robot the wrong way")
+
+speed_check = math.hypot(*travel) / stance_time
 check(abs(speed_check - math.hypot(VX, VY)) < 1e-6,
       "implied body speed matches command",
       f"implied {speed_check:.4f} m/s vs commanded {math.hypot(VX, VY):.4f}")
@@ -249,7 +289,7 @@ for label, cvx, cvy, cwz in cases:
 print("\n8. Generator integration: one full cycle at 100 Hz")
 # ---------------------------------------------------------------------------
 gen = GaitGenerator(params)
-gen.set_command(VX, VY, WZ)
+gen.set_command(VX, VY, WZ, immediate=True)   # skip the filter transient here
 steps = int(params.cycle_time * 100)
 for _ in range(steps):
     arr = gen.joint_array()
@@ -281,6 +321,88 @@ for leg in LEGS:
     pos, in_stance = foot_target(leg, params, 0.3, 0.0, 0.0, 0.0)
     check(math.dist(pos, nominal_foot(leg, params)) < 1e-12,
           f"[{leg.name}] rests at nominal position")
+
+# ---------------------------------------------------------------------------
+print("\n10. Stopping from any phase leaves all six feet down")
+# ---------------------------------------------------------------------------
+# The failure this exists to catch: the clock used to freeze the instant the
+# command dropped below the deadband. Stop mid-swing and three feet stay in
+# the air forever, on a support triangle nobody chose. Roughly half of all
+# stops land there, so it was reachable by just letting go of the key.
+DT = 1.0 / 50.0
+worst_resid = 0.0
+worst_at = None
+for k in range(20):
+    stop_phase = k / 20.0
+
+    g = GaitGenerator(GaitParams())
+    g.set_command(VX, VY, WZ, immediate=True)
+    # walk up to the chosen phase
+    while g.phase < stop_phase - 1e-9:
+        g.advance(DT)
+
+    g.set_command(0.0, 0.0, 0.0)
+    for _ in range(int(4.0 * params.cycle_time / DT)):     # 4 cycles of grace
+        g.advance(DT)
+
+    down = g.stance_count()
+    check(down == 6, f"stop at phase {stop_phase:.2f}: all six feet down",
+          f"only {down} down")
+
+    resid = max(
+        math.dist(pos, nominal_foot(leg, g.params))
+        for leg, (pos, _) in zip(LEGS, g.foot_targets().values())
+    )
+    if resid > worst_resid:
+        worst_resid, worst_at = resid, stop_phase
+    check(resid < 1e-3, f"stop at phase {stop_phase:.2f}: feet at nominal",
+          f"worst foot {resid * 1000:.2f} mm from nominal")
+
+check(worst_resid < 1e-3, "settled pose is the nominal stance from any phase",
+      f"worst {worst_resid * 1000:.2f} mm at phase {worst_at}")
+print(f"  20 stop phases tested, worst residual {worst_resid * 1000:.3f} mm")
+
+# The settle must not be instantaneous -- that would be the freeze bug with
+# extra steps -- and must not run forever.
+g = GaitGenerator(GaitParams())
+g.set_command(VX, VY, WZ, immediate=True)
+for _ in range(30):
+    g.advance(DT)
+g.set_command(0.0, 0.0, 0.0)
+ticks = 0
+limit = int(10.0 * params.cycle_time / DT)
+# `active` stays True through both the filter decay and the settle, and drops
+# only once every foot is back at nominal. Waiting on `settling` alone would
+# exit on tick one, because the command has not yet decayed below the
+# deadband and the settle has therefore not started.
+while g.active and ticks < limit:
+    g.advance(DT)
+    ticks += 1
+settle_cycles = ticks * DT / params.cycle_time
+check(ticks < limit, "settle terminates", f"still active after {limit} ticks")
+check(1.0 < settle_cycles < 2.6, "settle runs between 1 and 2.6 cycles",
+      f"took {settle_cycles:.2f} cycles")
+print(f"  stop to fully settled: {settle_cycles:.2f} gait cycles "
+      f"({ticks * DT:.2f} s)")
+
+# ---------------------------------------------------------------------------
+print("\n11. Command filter smooths a step in cmd_vel")
+# ---------------------------------------------------------------------------
+# Without this, a teleop step translates the three LOADED stance feet in a
+# single control tick.
+g = GaitGenerator(GaitParams())
+g.set_command(0.10, 0.0, 0.0)
+g.advance(DT)
+jump = math.hypot(g.vx, g.vy)
+check(jump < 0.10 * 0.25, "one tick does not apply the full command",
+      f"reached {jump:.4f} m/s of 0.10 in one 20 ms tick")
+
+for _ in range(int(1.0 / DT)):
+    g.advance(DT)
+check(abs(g.vx - 0.10) < 1e-3, "command is reached within one second",
+      f"at {g.vx:.5f} m/s after 1.0 s")
+print(f"  after 1 tick {jump:.4f} m/s, after 1 s {g.vx:.5f} m/s "
+      f"(tau = {params.command_tau} s)")
 
 # ---------------------------------------------------------------------------
 print("\n" + "=" * 74)

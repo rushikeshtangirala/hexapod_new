@@ -33,12 +33,42 @@ why it is worth stating twice.
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
+    # =========================================================================
+    # THE TOPIC IS DERIVED FROM control_mode. DO NOT SET IT BY HAND.
+    #
+    # This used to be a plain argument defaulting to the POSITION controller's
+    # topic. Launching in effort mode without also overriding it left the gait
+    # node publishing to a topic with no subscriber: no error, no warning, and
+    # a robot that stands there cycling nothing. The file's own header warned
+    # about this failure and the default still walked straight into it.
+    #
+    # Two controllers, two topics, and which one exists depends entirely on
+    # control_mode. That is a derivation, not a choice, so it is computed here
+    # instead of being left to whoever types the command line.
+    #
+    # command_topic remains available as an override for the unusual case
+    # (remapped namespace, a third controller). Empty means "derive it", which
+    # is what the `'' or (...)` idiom below does.
+    # =========================================================================
+    derived_topic = PythonExpression([
+        "'", LaunchConfiguration("command_topic"), "' or ",
+        "('/leg_trajectory_controller/joint_trajectory' if '",
+        LaunchConfiguration("control_mode"),
+        "' == 'effort' else '/leg_position_controller/joint_trajectory')",
+    ])
+
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "control_mode", default_value="effort",
+            description="MUST match hexapod_sim.launch.py. Selects the "
+                        "controller, and therefore the topic, automatically. "
+                        "effort = free base, position = fix_base:=true only.",
+        ),
         # MUST match control_mode in hexapod_sim.launch.py.
         #   trajectory -> JointTrajectory to leg_trajectory_controller (effort)
         #   position   -> Float64MultiArray to leg_position_controller
@@ -53,9 +83,9 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "command_topic",
-            default_value="/leg_position_controller/joint_trajectory",
-            description="Use /leg_trajectory_controller/joint_trajectory "
-                        "when running control_mode:=effort.",
+            default_value="",
+            description="Override only. Empty means derive it from "
+                        "control_mode, which is what you want.",
         ),
         DeclareLaunchArgument(
             "use_sim_time", default_value="true",
@@ -117,7 +147,7 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[{
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "command_type": LaunchConfiguration("command_type"),
-                "command_topic": LaunchConfiguration("command_topic"),
+                "command_topic": derived_topic,
                 "hold_only": LaunchConfiguration("hold_only"),
                 "startup_ramp": LaunchConfiguration("startup_ramp"),
                 "control_rate": LaunchConfiguration("control_rate"),

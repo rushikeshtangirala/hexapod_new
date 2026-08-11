@@ -410,6 +410,14 @@
        makes yaw fight the stance feet. -->
   <xacro:property name="foot_mu"       value="2.0"/>
 
+  <!-- Per-foot ground reaction force sensors. OFF by default: enabling them
+       requires disabling fixed-joint lumping on the six foot joints, which
+       turns six merged rigid bodies into six real constraints and so is a
+       change to the validated physics. Turn on when you need to answer "is
+       that foot actually loaded, and is it slipping" rather than infer it
+       from the gait clock. Full rationale in leg_macro.xacro. -->
+  <xacro:property name="enable_foot_sensors" value="false"/>
+
   <!-- ====================================================================
        CAD MESHES
 

@@ -84,21 +84,29 @@ the same code path rather than three special cases.
 The foot must return from the back of its stroke to the front, clearing the
 ground, and arrive with as little horizontal velocity as possible.
 
-Horizontal, cycloidal:      s(t) = t - sin(2*pi*t) / (2*pi)
+Horizontal, cubic Hermite:  s(t) = (2m-2)t^3 + (3-3m)t^2 + m*t,
+                            with m = -(1 - duty)/duty
 Vertical, raised cosine:    h(t) = height * (1 - cos(2*pi*t)) / 2
 
-Both have ZERO DERIVATIVE at t = 0 and t = 1. That property is the whole
-point:
+The vertical profile has zero derivative at both ends, which is right: the
+foot should arrive with no downward speed.
 
-  * at lift-off, the foot leaves without jerking the body
-  * at touchdown, the foot arrives with no horizontal velocity, so it does
-    not skid
+The horizontal profile does NOT, and that is the correction made on
+2026-08-11. It used to be a cycloid, chosen for zero horizontal derivative at
+both ends. But zero in the BODY frame is full body speed relative to the
+GROUND, so the cycloid guaranteed the very skid it was introduced to
+prevent. The requirement is that swing hands over to stance with no jump in
+velocity, and the stance moves at -v, so the swing must arrive at -v. The
+slope m above is exactly that, expressed in swing-normalised time.
 
-A naive linear-and-triangular swing profile touches down with full stride
-velocity. In simulation that shows up as feet that visibly skate on contact
-and a body that yaws randomly; on hardware it shows up as wear and lost
-odometry. Contact is the expensive event in legged locomotion, and shaping
-its approach is worth more than almost any other refinement.
+The cost is a small overshoot at each end -- the foot keeps travelling with
+the body just after lift-off and matches it again before touchdown, 4.4% of
+stride at duty 0.5, entirely while airborne. That is not an artefact to
+minimise; it is the foot tracking the ground through the transitions.
+
+Contact is the expensive event in legged locomotion, and shaping its
+approach is worth more than almost any other refinement. Getting the frame
+right is the first part of shaping it.
 """
 
 from __future__ import annotations
@@ -156,6 +164,13 @@ class GaitParams:
     # noise around zero.
     velocity_deadband: float = 0.005
 
+    # Time constant of the first-order lag on the velocity command, seconds.
+    # Stride is proportional to velocity, so an unfiltered step in cmd_vel
+    # translates the three LOADED stance feet in a single control tick. 0.15 s
+    # is a ~0.45 s settle, well under one gait cycle, so the response still
+    # feels immediate to an operator. Set to 0 to disable.
+    command_tau: float = 0.15
+
     offsets: dict[str, float] = field(
         default_factory=lambda: dict(TRIPOD_OFFSETS)
     )
@@ -201,9 +216,52 @@ def stride_vector(geom: LegGeometry, params: GaitParams,
     return (fx, fy)
 
 
-def _swing_horizontal(t: float) -> float:
-    """Cycloid: 0 -> 1 with zero derivative at both ends."""
-    return t - math.sin(2.0 * math.pi * t) / (2.0 * math.pi)
+def _swing_horizontal(t: float, duty: float = 0.5) -> float:
+    """
+    Swing profile, 0 -> 1, whose END SLOPES MATCH THE STANCE.
+
+    WHAT WAS HERE BEFORE, AND WHY IT WAS WRONG
+    ------------------------------------------
+    A cycloid, t - sin(2*pi*t)/(2*pi), chosen because its derivative is zero
+    at both ends. The justification was "the foot touches down with zero
+    horizontal velocity, so it does not skid".
+
+    That is zero velocity in the BODY frame. The body is moving. A foot that
+    is stationary with respect to the body at the instant of touchdown is
+    moving at the full body speed with respect to the GROUND -- which is
+    precisely the skid the profile was supposed to prevent. The reasoning was
+    one frame out.
+
+    What non-slip actually requires is that the swing hands over to the
+    stance with no jump in velocity. The stance foot moves through the body
+    frame at -v; the swing must therefore ARRIVE at -v, not at 0.
+
+    THE PROFILE
+    -----------
+    In swing-normalised time, the stance corresponds to a slope of
+
+        m = -(1 - duty) / duty            (-1 at duty = 0.5)
+
+    The unique cubic through (0,0) and (1,1) with sigma'(0) = sigma'(1) = m is
+
+        sigma(t) = (2m - 2)t^3 + (3 - 3m)t^2 + m*t
+
+    At duty = 0.5 that is -4t^3 + 6t^2 - t.
+
+    CONSEQUENCE, AND IT IS INTENTIONAL
+    ----------------------------------
+    Because the end slopes are negative, the profile dips slightly below 0
+    just after lift-off and overshoots slightly above 1 before touchdown:
+    -0.044 and 1.044 at duty = 0.5. The foot continues travelling with the
+    body for the first ~9% of swing before turning around, and matches the
+    body again before it lands. That excursion IS the fix. It costs 4.4% of
+    stride, 4.4 mm at the 0.10 m stride limit, entirely while airborne.
+
+    The vertical profile is unchanged. Zero VERTICAL velocity at touchdown is
+    correct and independent of this.
+    """
+    m = -(1.0 - duty) / duty
+    return (2.0 * m - 2.0) * t ** 3 + (3.0 - 3.0 * m) * t ** 2 + m * t
 
 
 def _swing_vertical(t: float) -> float:
@@ -212,17 +270,46 @@ def _swing_vertical(t: float) -> float:
 
 
 def foot_target(geom: LegGeometry, params: GaitParams, phase: float,
-                vx: float, vy: float, wz: float
+                vx: float, vy: float, wz: float,
+                allow_deadband: bool = True
                 ) -> tuple[tuple[float, float, float], bool]:
     """
     Foot position in base_link coordinates for one leg at one instant.
 
     Returns (position, in_stance).
+
+    SIGN CONVENTION -- READ THIS BEFORE CHANGING ANYTHING HERE
+    ----------------------------------------------------------
+    `stride_vector` returns the displacement the foot makes DURING STANCE,
+    already negated with respect to the body velocity. For a robot commanded
+    forward at +vx it points in -x. So:
+
+        stance  runs from -stride/2 to +stride/2   i.e. FRONT to REAR
+        swing   runs from +stride/2 to -stride/2   i.e. REAR to FRONT
+
+    A foot planted on the ground while the body advances travels from the
+    front of its stroke to the rear, as seen from the body. That is the whole
+    content of non-slip, and getting the sign backwards is not a cosmetic
+    error: it commands the planted foot FORWARD at v while the body is also
+    moving forward at v, so the foot is dragged through the world at 2v, in
+    the wrong direction, on all three loaded legs at once.
+
+    That bug was present until 2026-08-11. It survived because
+    verify_gait.py's non-slip check compared the MAGNITUDE of stance travel
+    against the magnitude of body travel, and a sign error is invisible to a
+    magnitude. The check is now signed. See verify_gait.py section 6.
+
+    `allow_deadband` exists for the stop sequence. While the generator is
+    settling the legs down after a stop command, the filtered velocity is by
+    definition below the deadband, but returning the nominal pose here would
+    teleport any airborne foot straight down to stance height. The generator
+    passes False for the duration of the settle and the trajectory stays
+    continuous. Nothing else should ever pass False.
     """
     nom = nominal_foot(geom, params)
 
     speed = math.hypot(vx, vy) + abs(wz) * params.stance_radius
-    if speed < params.velocity_deadband:
+    if allow_deadband and speed < params.velocity_deadband:
         return nom, True                       # stand still, all feet planted
 
     sx, sy = stride_vector(geom, params, vx, vy, wz)
@@ -230,18 +317,19 @@ def foot_target(geom: LegGeometry, params: GaitParams, phase: float,
     duty = params.duty_factor
 
     if p < duty:
-        # STANCE. Move linearly from +stride/2 to -stride/2 so the foot is
-        # stationary with respect to the ground.
+        # STANCE. Linear, front of the stroke to the rear, so the foot is
+        # stationary with respect to the GROUND.
         t = p / duty
-        x = nom[0] + sx * (0.5 - t)
-        y = nom[1] + sy * (0.5 - t)
+        x = nom[0] + sx * (t - 0.5)
+        y = nom[1] + sy * (t - 0.5)
         return (x, y, nom[2]), True
 
-    # SWING. Return from -stride/2 to +stride/2, lifting clear.
+    # SWING. Rear of the stroke back to the front, lifting clear, arriving at
+    # the stance velocity rather than at rest.
     t = (p - duty) / (1.0 - duty)
-    s = _swing_horizontal(t)
-    x = nom[0] + sx * (s - 0.5)
-    y = nom[1] + sy * (s - 0.5)
+    s = _swing_horizontal(t, duty)
+    x = nom[0] + sx * (0.5 - s)
+    y = nom[1] + sy * (0.5 - s)
     z = nom[2] + params.step_height * _swing_vertical(t)
     return (x, y, z), False
 
@@ -258,33 +346,137 @@ class GaitGenerator:
     def __init__(self, params: GaitParams | None = None) -> None:
         self.params = params or GaitParams()
         self.phase = 0.0
+
+        # Two sets of velocities. `*_cmd` is what the operator asked for;
+        # `vx/vy/wz` is the filtered value the geometry actually uses. See
+        # set_command.
         self.vx = 0.0
         self.vy = 0.0
         self.wz = 0.0
+        self.vx_cmd = 0.0
+        self.vy_cmd = 0.0
+        self.wz_cmd = 0.0
 
-    def set_command(self, vx: float, vy: float, wz: float) -> None:
-        self.vx, self.vy, self.wz = vx, vy, wz
+        # Stop sequencing state. See advance().
+        self._active = False
+        self._settling = False
+        self._settle_remaining = 0.0
+
+    def set_command(self, vx: float, vy: float, wz: float,
+                    immediate: bool = False) -> None:
+        """
+        Set the TARGET velocity. The gait follows it through a filter.
+
+        WHY NOT APPLY IT DIRECTLY
+        -------------------------
+        Stride length is proportional to commanded velocity, so a step in the
+        command is a step in every leg's target position -- including the
+        three legs currently in stance and carrying the robot. Those feet
+        cannot translate without either slipping or shoving the body. A
+        keyboard teleop publishes exactly such steps: 0 to 0.06 m/s in one
+        message.
+
+        The filter is applied in advance(), where dt is known, so the time
+        constant means the same thing regardless of control rate.
+
+        immediate=True bypasses it. For offline analysis and tests that want
+        to evaluate the steady-state gait without waiting out a transient.
+        """
+        self.vx_cmd, self.vy_cmd, self.wz_cmd = vx, vy, wz
+        if immediate:
+            self.vx, self.vy, self.wz = vx, vy, wz
+
+    def _filter_command(self, dt: float) -> None:
+        """First-order lag toward the commanded velocity, dt-correct."""
+        tau = self.params.command_tau
+        if tau <= 1e-9:
+            self.vx, self.vy, self.wz = self.vx_cmd, self.vy_cmd, self.wz_cmd
+            return
+        alpha = 1.0 - math.exp(-dt / tau)
+        self.vx += alpha * (self.vx_cmd - self.vx)
+        self.vy += alpha * (self.vy_cmd - self.vy)
+        self.wz += alpha * (self.wz_cmd - self.wz)
 
     def advance(self, dt: float) -> None:
         """
         Step the gait clock.
 
-        The clock FREEZES when the robot is commanded to stop, rather than
-        continuing to run. If it kept advancing, the robot would resume
-        walking from an arbitrary phase, and the first step after every stop
-        would be a random partial stride. Freezing means it always resumes
-        from where it paused.
+        STOPPING IS A SEQUENCE, NOT AN EVENT
+        ------------------------------------
+        This used to freeze the clock the instant the commanded speed fell
+        below the deadband. That is wrong, and it is a stability bug rather
+        than a cosmetic one.
+
+        Stopping happens at whatever phase the operator releases the key,
+        which is uniformly distributed. Roughly half the time that is
+        mid-swing, and freezing then leaves THREE FEET IN THE AIR
+        indefinitely. The robot is left balanced on one tripod at an
+        arbitrary point in its stroke, on a support triangle nobody checked.
+        stance_count() will report 3, which is the documented minimum, and
+        say nothing about whether the centre of mass projects inside that
+        particular triangle.
+
+        Instead: on a stop command, keep stepping for the remainder of the
+        current cycle plus one more full cycle. That guarantees BOTH tripods
+        complete their swing and land. Meanwhile the command filter is
+        decaying the velocity toward zero, so the stride shrinks smoothly and
+        the legs converge on their nominal positions rather than being cut
+        off wherever they happened to be. The two mechanisms only work
+        together; do not remove one.
+
+        Settling ends with phase = 0, which is the correct resting phase:
+        tripod A is at the start of stance and tripod B is at the start of
+        swing, where the vertical profile is still zero. All six feet are at
+        stance height.
         """
+        self._filter_command(dt)
+
         speed = (math.hypot(self.vx, self.vy)
                  + abs(self.wz) * self.params.stance_radius)
-        if speed < self.params.velocity_deadband:
+        step = dt / self.params.cycle_time
+
+        if speed >= self.params.velocity_deadband:
+            self._active = True
+            self._settling = False
+            self.phase = (self.phase + step) % 1.0
             return
-        self.phase = (self.phase + dt / self.params.cycle_time) % 1.0
+
+        # Below the deadband. If we were never walking, there is nothing to
+        # settle and the clock genuinely should not move.
+        if not self._active:
+            return
+
+        if not self._settling:
+            self._settling = True
+            self._settle_remaining = (1.0 - self.phase) + 1.0
+
+        self._settle_remaining -= step
+        if self._settle_remaining <= 0.0:
+            self._settling = False
+            self._active = False
+            self.phase = 0.0
+        else:
+            self.phase = (self.phase + step) % 1.0
+
+    @property
+    def settling(self) -> bool:
+        """True while the legs are being brought down after a stop command."""
+        return self._settling
+
+    @property
+    def active(self) -> bool:
+        """
+        True from the first tick of walking until the legs have finished
+        settling. Goes False only when every foot is back at nominal, so it
+        is the right thing to gate "is it safe to switch controllers" on.
+        """
+        return self._active
 
     def foot_targets(self) -> dict[str, tuple[tuple[float, float, float], bool]]:
         return {
             leg.name: foot_target(leg, self.params, self.phase,
-                                  self.vx, self.vy, self.wz)
+                                  self.vx, self.vy, self.wz,
+                                  allow_deadband=not self._settling)
             for leg in LEGS
         }
 
@@ -303,7 +495,8 @@ class GaitGenerator:
         out: list[float] = []
         for leg in LEGS:
             target, _ = foot_target(leg, self.params, phase % 1.0,
-                                    self.vx, self.vy, self.wz)
+                                    self.vx, self.vy, self.wz,
+                                    allow_deadband=not self._settling)
             t1, t2, t3 = inverse_kinematics_body(leg, target)
             out.extend((t1, t2, t3))
         return out
@@ -328,7 +521,8 @@ class GaitGenerator:
         out: list[float] = []
         for leg in LEGS:
             target, _ = foot_target(leg, self.params, self.phase,
-                                    self.vx, self.vy, self.wz)
+                                    self.vx, self.vy, self.wz,
+                                    allow_deadband=not self._settling)
             t1, t2, t3 = inverse_kinematics_body(leg, target)
             out.extend((t1, t2, t3))
         return out

@@ -343,6 +343,73 @@
       <material>Gazebo/Black</material>
     </gazebo>
 
+    <!-- ================================================================
+         FOOT CONTACT SENSOR.  OFF BY DEFAULT.  See enable_foot_sensors in
+         common_properties.xacro.
+
+         WHY YOU WANT IT
+
+         The gait knows which feet it ASKED to put in stance. Nothing in the
+         stack knows which feet are actually LOADED. Those are different
+         things, and when the body drifts, the three candidate causes named
+         in ARCHITECTURE.md section 4 (a foot slipping, a foot never making
+         contact, and the solver injecting impulses) look identical from
+         outside. With a force per foot each becomes a measurement:
+
+           commanded stance mask vs measured contact mask -> missed feet
+           sum of normal forces vs total weight           -> unloaded feet
+           tangential / normal ratio vs mu                -> slip, directly
+
+         Same principle as everything in tools/: make the failure mode
+         measurable rather than guessable.
+
+         WHY IT IS OFF BY DEFAULT, AND WHAT TURNING IT ON COSTS
+
+         foot_joint is FIXED, so sdformat normally lumps foot_link into
+         tibia_link and the foot ceases to exist as a body. A contact sensor
+         cannot then be attached to it by name, because the collision gets
+         renamed to something of the form
+             <parent>_fixed_joint_lump__<child>_collision
+         which is an implementation detail of the converter and a bad thing
+         to hard-code.
+
+         disableFixedJointLumping keeps foot_link as a real link, which
+         makes the sensor straightforward but replaces a merged rigid body
+         with an actual constraint, six of them. That is a change to the
+         validated physics, so it is opt-in rather than silently on.
+
+         TO USE:  set enable_foot_sensors to true in common_properties.xacro,
+         rebuild, then confirm the topics exist before trusting anything:
+             ros2 topic list | grep feet
+             ros2 topic echo /hexapod/feet/lf/contact (add the once flag)
+         If they are silent, dump the converted SDF and check the collision
+         name rather than guessing:
+             gz sdf -p <(xacro hexapod.urdf.xacro) | grep -A2 collision
+    ================================================================ -->
+    <xacro:if value="${enable_foot_sensors}">
+      <gazebo reference="${prefix}_foot_joint">
+        <disableFixedJointLumping>true</disableFixedJointLumping>
+        <preserveFixedJoint>true</preserveFixedJoint>
+      </gazebo>
+
+      <gazebo reference="${prefix}_foot_link">
+        <sensor name="${prefix}_foot_contact" type="contact">
+          <always_on>true</always_on>
+          <update_rate>100.0</update_rate>
+          <contact>
+            <collision>${prefix}_foot_link_collision</collision>
+          </contact>
+          <plugin name="${prefix}_foot_bumper" filename="libgazebo_ros_bumper.so">
+            <ros>
+              <namespace>/hexapod</namespace>
+              <remapping>bumper_states:=feet/${prefix}/contact</remapping>
+            </ros>
+            <frame_name>${prefix}_foot_link</frame_name>
+          </plugin>
+        </sensor>
+      </gazebo>
+    </xacro:if>
+
     <gazebo reference="${prefix}_coxa_link">
       <material>Gazebo/Orange</material>
     </gazebo>

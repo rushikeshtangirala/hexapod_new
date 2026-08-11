@@ -74,8 +74,14 @@ class GaitNode(Node):
         self.declare_parameter("control_rate", 50.0)
         self.declare_parameter("cycle_time", 1.4)
         self.declare_parameter("step_height", 0.045)
-        self.declare_parameter("stance_radius", 0.34)
-        self.declare_parameter("stance_height", -0.11)
+        # These MUST match GaitParams. 0.34 / -0.11 was the abandoned stance:
+        # 86% of full leg extension with the tibia horizontal, minimal ground
+        # clearance, and no vertical compliance to absorb touchdown. It was
+        # left here as a parameter default long after GaitParams moved to
+        # 0.28 / -0.18, and only walk.launch.py's override hid it. Running
+        # the node with `ros2 run` got the bad stance silently.
+        self.declare_parameter("stance_radius", 0.28)
+        self.declare_parameter("stance_height", -0.18)
         self.declare_parameter("max_stride", 0.10)
         self.declare_parameter("max_linear_speed", 0.10)
         self.declare_parameter("max_angular_speed", 0.50)
@@ -153,6 +159,12 @@ class GaitNode(Node):
         )
         self.command_type = str(self.get_parameter("command_type").value)
         topic = str(self.get_parameter("command_topic").value)
+
+        # State for _check_subscribers. See its docstring.
+        self.command_topic_name = topic
+        self.subscriber_seen = False
+        self.subscriber_warned = False
+        self.node_start = self.get_clock().now()
 
         if self.command_type == "trajectory":
             self.traj_pub = self.create_publisher(JointTrajectory, topic, 10)
@@ -451,12 +463,70 @@ class GaitNode(Node):
                         "and the URDF initial_value do not agree."
                     )
 
+        self._check_subscribers()
+
         if self.command_type == "trajectory":
             self.publish_trajectory(angles)
         else:
             msg = Float64MultiArray()
             msg.data = [float(a) for a in angles]
             self.pub.publish(msg)
+
+    # ----------------------------------------------------------------------
+    def _check_subscribers(self) -> None:
+        """
+        Complain, loudly and once, if nobody is listening.
+
+        THE FAILURE THIS EXISTS TO CATCH
+        --------------------------------
+        Publishing to a topic with no subscriber is not an error in ROS. It
+        succeeds. Every node reports healthy, /joint_states updates, the
+        controller is active, and the robot does not move. There is nothing
+        in any log to look at.
+
+        That is exactly what happened on 2026-08-12: the gait node published
+        to /leg_position_controller/joint_trajectory while the controller
+        actually spawned in effort mode was leg_trajectory_controller. Two
+        separate launch files each held half of the decision and neither
+        checked the other. walk.launch.py now derives the topic from
+        control_mode so the mismatch cannot be expressed, and this check is
+        the backstop for every other way of getting it wrong: a typo in an
+        override, a namespace remap, a controller that failed to spawn.
+
+        Checked continuously rather than once at startup, because the
+        controller spawner may legitimately still be starting up when the
+        first gait tick fires. Reported at most once.
+        """
+        if self.subscriber_warned:
+            return
+
+        pub = self.traj_pub if self.command_type == "trajectory" else self.pub
+        if pub is None:
+            return
+
+        if pub.get_subscription_count() > 0:
+            if not self.subscriber_seen:
+                self.subscriber_seen = True
+                self.get_logger().info(
+                    f"Controller is listening on {self.command_topic_name}."
+                )
+            return
+
+        elapsed = (self.get_clock().now() - self.node_start).nanoseconds * 1e-9
+        if elapsed < 5.0:
+            return                     # spawner may still be coming up
+
+        self.subscriber_warned = True
+        self.get_logger().error(
+            "NOTHING IS SUBSCRIBED TO " + self.command_topic_name + ".\n"
+            "  The gait is running and publishing into the void. The robot "
+            "will not move, and nothing else will report an error.\n"
+            "  Almost always: control_mode here does not match "
+            "hexapod_sim.launch.py. effort spawns leg_trajectory_controller, "
+            "position spawns leg_position_controller.\n"
+            "  Check with:  ros2 control list_controllers\n"
+            "               ros2 topic info " + self.command_topic_name
+        )
 
     # ----------------------------------------------------------------------
     def publish_trajectory(self, angles: list[float]) -> None:
@@ -496,6 +566,40 @@ class GaitNode(Node):
             velocities = [0.0] * len(angles)
         else:
             velocities = [float(v) for v in self.gen.joint_velocities()]
+
+        # ---- REFUSE TO PUBLISH A NON-FINITE COMMAND -----------------------
+        #
+        # A NaN or infinity here is not a bad command, it is a fatal one. The
+        # effort controller turns it into a NaN torque, Gazebo integrates
+        # that into a NaN pose, and the model vanishes from the world. Every
+        # downstream measurement then reads zero, which looks exactly like a
+        # robot standing perfectly still and refusing to walk. We spent a
+        # full test cycle reading "legs not moving" when the real answer was
+        # "there is no robot".
+        #
+        # Worse, JointTrajectoryController latches current state on
+        # activation, so once a NaN reaches it the held trajectory is NaN
+        # permanently and the simulation cannot recover without a restart.
+        #
+        # So: check, name the offending joint, and hold the previous command
+        # instead. A frozen robot is diagnosable; a deleted one is not.
+        bad = [
+            (n, v) for n, v in zip(JOINT_NAMES, angles)
+            if not math.isfinite(v)
+        ] + [
+            (f"{n}.vel", v) for n, v in zip(JOINT_NAMES, velocities)
+            if not math.isfinite(v)
+        ]
+        if bad:
+            self.get_logger().error(
+                "NON-FINITE COMMAND, not publishing. Offending values: "
+                + ", ".join(f"{n}={v}" for n, v in bad[:6])
+                + (f" (+{len(bad) - 6} more)" if len(bad) > 6 else "")
+                + f"  [phase={self.gen.phase:.4f}, "
+                f"vx={self.gen.vx:.4f}, vy={self.gen.vy:.4f}, "
+                f"wz={self.gen.wz:.4f}]"
+            )
+            return
 
         point = JointTrajectoryPoint()
         point.positions = [float(a) for a in angles]

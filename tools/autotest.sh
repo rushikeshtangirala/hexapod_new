@@ -220,6 +220,30 @@ run_one_mode() {
       --settle "${SETTLE}"
   local rc=$?
 
+  # Codes 17 (robot absent) and 10 (ejected) mean the failure is in the
+  # SIMULATION, not the gait, so the simulator's own log is the evidence.
+  # Printing it here saves a round trip; asking someone to go and fetch a
+  # file costs an entire exchange.
+  if [ "${rc}" = "17" ] || [ "${rc}" = "10" ]; then
+    echo ""
+    echo "   ---- simulation log, last 50 lines ----"
+    tail -50 "/tmp/autotest_sim_${mode}.log" 2>/dev/null | sed 's/^/   | /'
+    echo "   ---- gait node log, last 25 lines ----"
+    tail -25 "/tmp/autotest_gait_${mode}.log" 2>/dev/null | sed 's/^/   | /'
+    echo "   ---- who publishes /odom, and what does it say ----"
+    timeout 10 ros2 topic info /odom --verbose 2>&1 \
+      | grep -E "Publisher count|Node name|Reliability" | sed 's/^/   | /'
+    timeout 10 ros2 topic echo /odom --once --field pose.pose 2>&1 \
+      | head -20 | sed 's/^/   | /'
+    echo "   ---- p3d plugin loaded? ----"
+    grep -iE "p3d|ground_truth" "/tmp/autotest_sim_${mode}.log" 2>/dev/null \
+      | head -5 | sed 's/^/   | /'
+    echo "   ---- models actually present in gazebo ----"
+    timeout 10 ros2 service call /get_model_list gazebo_msgs/srv/GetModelList \
+      2>&1 | tail -5 | sed 's/^/   | /'
+    echo "   ---------------------------------------"
+  fi
+
   cleanup
   return ${rc}
 }
@@ -250,6 +274,7 @@ for m in ${MODES}; do
     14) msg="wanders, motion not coordinated" ;;
     15) msg="legs not moving at all -- command never reached the gait" ;;
     16) msg="steps on the spot -- no stride commanded" ;;
+    17) msg="ROBOT NOT IN THE WORLD -- model missing or destroyed" ;;
     2)  msg="no odometry -- sim did not come up" ;;
     3)  msg="simulation time frozen" ;;
     2[0-2]) msg="startup failed, see /tmp/autotest_sim_${m}.log" ;;
