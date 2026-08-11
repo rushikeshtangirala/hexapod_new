@@ -418,15 +418,30 @@ run_one() {
   #   real, then zero at sample N -> the robot did something at a knowable
   #                                  moment, and N tells us whether it was
   #                                  the ramp finishing or the drive starting.
+  # GAZEBO'S OWN ANSWER, not the p3d plugin's.
+  #
+  # On 2026-08-12 config D reported /odom identically zero from the FIRST
+  # sample, before the ramp and before any command, while the gait node read
+  # correct joint angles throughout. A ground-truth sensor that reads zero
+  # from t=0 is not observing a robot that fell over; it is not observing at
+  # all. /odom is therefore not admissible evidence about D.
+  #
+  # get_entity_state asks the simulator directly for the model's pose. It is
+  # a service call, so it also sidesteps the QoS message loss that makes
+  # `topic echo` unreliable here. If this shows the robot moving while /odom
+  # shows zero, the fault is entirely in the p3d plugin and every previous D
+  # verdict is void.
   local tl="/tmp/autotest_timeline_${tag}.txt"
   : > "${tl}"
   (
     for i in $(seq 1 16); do
       od=$(timeout 3 ros2 topic echo /odom --once --field pose.pose.position 2>/dev/null \
            | tr '\n' ' ' | sed 's/  */ /g')
-      js=$(timeout 3 ros2 topic echo /joint_states --once --field position 2>/dev/null \
-           | tr '\n' ' ' | cut -c1-70)
-      printf '  t+%-3ss  odom[%s]  joints[%s]\n' "$((i * 2))" "${od}" "${js}" >> "${tl}"
+      gz=$(timeout 4 ros2 service call /get_entity_state gazebo_msgs/srv/GetEntityState \
+             "{name: 'hexapod', reference_frame: 'world'}" 2>/dev/null \
+           | grep -o "position=geometry_msgs.msg.Point([^)]*)" | head -1)
+      printf '  t+%-3ss\n     p3d  %s\n     gz   %s\n' \
+             "$((i * 2))" "${od:-<nothing>}" "${gz:-<no answer>}" >> "${tl}"
       sleep 2
     done
   ) &
