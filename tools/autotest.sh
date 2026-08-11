@@ -440,8 +440,18 @@ run_one() {
       gz=$(timeout 4 ros2 service call /get_entity_state gazebo_msgs/srv/GetEntityState \
              "{name: 'hexapod', reference_frame: 'world'}" 2>/dev/null \
            | grep -o "position=geometry_msgs.msg.Point([^)]*)" | head -1)
-      printf '  t+%-3ss\n     p3d  %s\n     gz   %s\n' \
-             "$((i * 2))" "${od:-<nothing>}" "${gz:-<no answer>}" >> "${tl}"
+      # A LINK, not the model.
+      #
+      # Model pose and link pose are different things. If the model frame
+      # reads (0,0,0) forever while a FOOT link reads a sensible height and
+      # moves, then the body is fine and only the model-frame reporting is
+      # broken. If the foot also sits at the origin, the robot really is
+      # pinned there and the question becomes why.
+      lk=$(timeout 4 ros2 service call /get_entity_state gazebo_msgs/srv/GetEntityState \
+             "{name: 'hexapod::lf_foot_link', reference_frame: 'world'}" 2>/dev/null \
+           | grep -o "position=geometry_msgs.msg.Point([^)]*)" | head -1)
+      printf '  t+%-3ss\n     p3d      %s\n     gz model %s\n     gz foot  %s\n' \
+             "$((i * 2))" "${od:-<nothing>}" "${gz:-<no answer>}" "${lk:-<no answer>}" >> "${tl}"
       sleep 2
     done
   ) &
