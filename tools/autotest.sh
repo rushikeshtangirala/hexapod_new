@@ -1,122 +1,235 @@
 #!/usr/bin/env bash
 # =============================================================================
-# autotest.sh : run the whole walking test by itself and print a verdict.
+# autotest.sh : run the walking test by itself, against every candidate
+#               configuration, and print one table with a verdict for each.
 #
 # WHAT THIS REPLACES
-# Four terminals, a person watching a Gazebo window, and a description sent
+# Four terminals, a person watching a Gazebo window, and a description typed
 # back over chat. That loop cost days, because "it wiggles", "it flies away"
 # and "it moves randomly" are the same sentence for several unrelated faults,
 # and each round trip needed a rebuild, a relaunch, and a human's attention.
+# Worse, a mistyped or half-run command produces output that looks like a
+# result and is not one.
 #
-# This runs headless (no GUI, so it is fast), drives the robot itself,
-# measures /odom, and prints a table with a one-line verdict. Nothing to
-# watch, nothing to time, nothing to transcribe.
+# Nothing here needs watching, timing or transcribing. It runs headless,
+# drives the robot itself, measures ground-truth odometry, tears everything
+# down, and writes a single file to paste.
 #
-# WHY IT TESTS BOTH CONTROL MODES
-# The open question is not "does this configuration work" but "which of the
-# two approaches works". Testing them one at a time, a day apart, with other
-# things changing in between, is how we ended up unable to attribute any
-# result to any cause. Running both back to back against an identical robot
-# makes the comparison mean something.
+# WHY IT TESTS SEVERAL CONFIGURATIONS
+# The open question is not "does this configuration work" but "WHICH of them
+# works". Testing one at a time, hours apart, with other things changing in
+# between, is exactly how this project ended up unable to attribute any
+# result to any cause. Running them back to back against an identical robot
+# is what makes the comparison mean anything.
 #
 # USAGE
-#   bash ~/hexapod_ws/tools/autotest.sh              # both modes
-#   bash ~/hexapod_ws/tools/autotest.sh effort       # one mode
-#   bash ~/hexapod_ws/tools/autotest.sh position
+#   bash ~/hexapod_ws/tools/autotest.sh            # all configurations
+#   bash ~/hexapod_ws/tools/autotest.sh B          # just one, by letter
+#   bash ~/hexapod_ws/tools/autotest.sh B C
 #
-# Takes about 90 seconds per mode. Safe to run repeatedly.
+# About 2 minutes per configuration. Safe to re-run. Safe to interrupt.
 # =============================================================================
 set -o pipefail
 
 WS="${HOME}/hexapod_ws"
 TOOLS="${WS}/tools"
+REPORT="/tmp/autotest_report_$(date +%Y%m%d_%H%M%S).txt"
 
-if [ ! -f "${WS}/install/setup.bash" ]; then
-  echo "ERROR: ${WS}/install/setup.bash not found. Run: hexbuild" >&2
-  exit 1
-fi
+# Everything this script prints also lands in the report file, so there is
+# exactly one thing to paste and no chance of a partial copy.
+exec > >(tee "${REPORT}") 2>&1
 
-# shellcheck disable=SC1091
-source "${WS}/install/setup.bash"
+# =============================================================================
+# CONFIGURATIONS
+#
+#   name | control_mode | fix_base | sim_profile | why it is in the list
+# -----------------------------------------------------------------------------
+#   B    | position     | false    | physical    | Never actually tried with a
+#          free base and a CORRECT gait. The earlier verdict against it
+#          ("body travels 2.9 mm in 20 s") was measured while the stance swept
+#          every foot the wrong way, dragging them over the ground at twice
+#          body speed. That measurement is void. It may simply work now.
+#
+#   C    | effort       | false    | repo        | KevinOchs/hexapod_ros
+#          assumptions: 1e-5 kg links, identity inertias, p=100. Non-physical
+#          and stable because of it.
+#
+#   D    | effort       | false    | physical    | Our measured model on the
+#          interface that is physically correct. The one we actually want.
+#          Expected to need gain work; this tells us how much.
+#
+# A (fix_base:=true) is deliberately absent. It welds the body to the world,
+# so it CANNOT translate, and "the legs move but the robot does not" is the
+# guaranteed result rather than a finding. Use it by hand to inspect leg
+# motion, never as a walking test.
+# =============================================================================
+config_mode()    { case "$1" in B) echo position ;; C|D) echo effort ;; esac; }
+config_profile() { case "$1" in B|D) echo physical ;; C) echo repo ;; esac; }
+config_desc() {
+  case "$1" in
+    B) echo "position interface, measured model" ;;
+    C) echo "effort interface, hexapod_ros model (non-physical)" ;;
+    D) echo "effort interface, measured model" ;;
+  esac
+}
 
-# DEFAULT IS EFFORT ONLY.
-#
-# It used to be "position effort". Position mode has since been shown, by
-# measurement rather than argument, to be incapable of walking a free-base
-# robot in Gazebo:
-#
-#   coxa swing  9.2 deg   the legs reach correctly
-#   femur swing 16.6 deg  the legs lift correctly
-#   body travel 2.9 mm over 20 s
-#   tilt        0.0 deg, height steady to 0.3 mm
-#
-# The gait is executed perfectly and the body does not move. Gazebo realises
-# position commands with SetPosition(), which relocates a joint without
-# giving it a matching velocity. Contact friction is computed from sliding
-# VELOCITY, so the solver sees a stationary foot and generates no propulsive
-# force. The feet pass through the floor rather than pushing off it. No
-# parameter changes this.
-#
-# That result is deterministic: it reproduces digit for digit on every run.
-# Re-running it costs 90 seconds and teaches nothing, so it is no longer the
-# default. Still available explicitly:  autotest.sh position
-MODES="${1:-effort}"
+CONFIGS="${*:-B C D}"
 
 SPEED=0.03
 BASELINE=8
 DRIVE=20
 SETTLE=3
 
-# Every background pid we start, so teardown is total. A surviving gzserver
-# holds port 11345 and silently breaks the NEXT run, which has already cost
-# this project one full debugging cycle.
 PIDS=()
 
 cleanup() {
-  for p in "${PIDS[@]:-}"; do
-    kill -INT "${p}" 2>/dev/null
-  done
+  for p in "${PIDS[@]:-}"; do kill -INT "${p}" 2>/dev/null; done
   sleep 2
-  for p in "${PIDS[@]:-}"; do
-    kill -9 "${p}" 2>/dev/null
-  done
-  pkill -9 -f gzserver  2>/dev/null
-  pkill -9 -f gzclient  2>/dev/null
-  pkill -9 -f gait_node 2>/dev/null
+  for p in "${PIDS[@]:-}"; do kill -9 "${p}" 2>/dev/null; done
+  pkill -9 -f gzserver   2>/dev/null
+  pkill -9 -f gzclient   2>/dev/null
+  pkill -9 -f gait_node  2>/dev/null
+  pkill -9 -f "topic pub" 2>/dev/null
   sleep 1
   PIDS=()
 }
 trap cleanup EXIT INT TERM
 
+hr() { echo "------------------------------------------------------------"; }
+
+# =============================================================================
+# PREFLIGHT
+#
+# Every check here has cost this project at least one full debugging cycle,
+# and every one of them is invisible at runtime: the symptom is always some
+# variant of "it launches and nothing happens".
+# =============================================================================
+preflight() {
+  local fail=0
+  echo "============================================================"
+  echo " PREFLIGHT"
+  echo "============================================================"
+
+  if [ ! -f "${WS}/install/setup.bash" ]; then
+    echo "  FAIL  no ${WS}/install/setup.bash. Run: hexbuild"
+    return 1
+  fi
+  # shellcheck disable=SC1091
+  source "${WS}/install/setup.bash"
+  echo "  ok    workspace sourced"
+
+  # ROS 2 talks over DDS multicast. Two shells with different ROS_DOMAIN_ID
+  # see completely separate graphs, which looks exactly like "the service
+  # never appears".
+  echo "  info  ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}  RMW=${RMW_IMPLEMENTATION:-default}"
+
+  local so
+  so=$(find /opt/ros -name "libgazebo_ros2_control.so" 2>/dev/null | head -1)
+  if [ -z "${so}" ]; then
+    echo "  FAIL  libgazebo_ros2_control.so not found."
+    echo "        sudo apt install ros-humble-gazebo-ros2-control"
+    fail=1
+  else
+    echo "  ok    libgazebo_ros2_control.so present"
+  fi
+
+  if pgrep -f "[g]zserver" >/dev/null 2>&1; then
+    echo "  warn  a gzserver is already running; killing it (it would hold"
+    echo "        port 11345 and break this run in a confusing way)"
+    cleanup
+    bash "${TOOLS}/reset_sim.sh" >/dev/null 2>&1
+  else
+    echo "  ok    no stale gzserver"
+  fi
+
+  # ---- per configuration: does the model build, and does the controller
+  # ---- YAML it references actually exist in the INSTALL space?
+  #
+  # This is the check that would have caught the current failure immediately.
+  # gazebo_ros2_control is given a <parameters> path at plugin load. If that
+  # file is missing, the plugin throws, gzserver carries on running quite
+  # happily, and no controller_manager is ever created. There is no error in
+  # the launch terminal. `ros2 control list_controllers` then blocks forever
+  # on a service that will never exist.
+  local desc_share
+  desc_share=$(ros2 pkg prefix hexapod_description 2>/dev/null)/share/hexapod_description
+  for c in ${CONFIGS}; do
+    local prof urdf params
+    prof=$(config_profile "${c}")
+    urdf="/tmp/autotest_model_${prof}.urdf"
+
+    if ! ros2 run xacro xacro "${desc_share}/urdf/hexapod.urdf.xacro" \
+          sim:=true fix_base:=false \
+          control_mode:="$(config_mode "${c}")" \
+          sim_profile:="${prof}" > "${urdf}" 2>"/tmp/autotest_xacro_${prof}.err"; then
+      echo "  FAIL  [${c}] xacro failed for sim_profile:=${prof}"
+      sed 's/^/        | /' "/tmp/autotest_xacro_${prof}.err" | tail -15
+      fail=1
+      continue
+    fi
+
+    params=$(grep -o '<parameters>[^<]*</parameters>' "${urdf}" \
+             | sed 's|</\?parameters>||g' | head -1)
+    if [ -z "${params}" ]; then
+      echo "  FAIL  [${c}] no <parameters> in the URDF: the ros2_control"
+      echo "        plugin block is not reaching the model."
+      fail=1
+    elif [ ! -f "${params}" ]; then
+      echo "  FAIL  [${c}] controller YAML MISSING:"
+      echo "        ${params}"
+      echo "        The plugin will throw on load and no controller_manager"
+      echo "        will ever appear. Fix: hexsync && colcon build"
+      fail=1
+    else
+      echo "  ok    [${c}] ${prof} model builds, controller YAML present"
+    fi
+
+    # Masses confirm the profile actually took effect rather than silently
+    # falling through to the default.
+    local m
+    m=$(grep -o 'mass value="[^"]*"' "${urdf}" | sort -u | head -4 | tr '\n' ' ')
+    echo "        masses: ${m}"
+  done
+
+  hr
+  return ${fail}
+}
+
 wait_for_topic() {
-  # $1 topic, $2 timeout seconds
   local topic="$1" limit="$2" i=0
   while [ "${i}" -lt "${limit}" ]; do
-    if timeout 3 ros2 topic echo "${topic}" --once >/dev/null 2>&1; then
+    if timeout 3 ros2 topic echo "${topic}" --once >/dev/null 2>&1; then return 0; fi
+    i=$((i + 3))
+  done
+  return 1
+}
+
+wait_for_controller_manager() {
+  # Separated from the controller check on purpose. "No controller_manager"
+  # and "controller_manager exists but a controller failed to activate" are
+  # different faults with different fixes, and the CLI reports both as an
+  # endless wait followed by "No controllers are currently loaded!".
+  local limit="$1" i=0
+  while [ "${i}" -lt "${limit}" ]; do
+    if timeout 3 ros2 service list 2>/dev/null \
+         | grep -q "/controller_manager/list_controllers"; then
       return 0
     fi
+    sleep 3
     i=$((i + 3))
   done
   return 1
 }
 
 wait_for_controller_active() {
-  # $1 controller name, $2 timeout seconds
-  #
   # STRIP ANSI COLOUR BEFORE MATCHING.
-  #
-  # `ros2 control list_controllers` colourises the state word, so the raw
-  # bytes are:
-  #     joint_state_broadcaster  ...  <ESC>[92mactive<ESC>[0m
-  # The obvious pattern "name.* active" then never matches, because what
-  # immediately precedes "active" is an escape sequence, not a space. The
-  # controllers were active within two seconds and this function waited
-  # ninety, reported failure, and sent us hunting a startup bug that did not
-  # exist.
-  #
-  # Lesson worth keeping: never pattern-match the output of a CLI tool
-  # without stripping formatting first. What you see in a terminal and what
-  # arrives in a pipe are not the same bytes.
+  # `ros2 control list_controllers` colourises the state word, so the bytes
+  # are  name ... <ESC>[92mactive<ESC>[0m . A pattern of "name.* active" never
+  # matches, because what precedes "active" is an escape sequence, not a
+  # space. That cost ninety wasted seconds per run and a hunt for a startup
+  # bug that did not exist. Never pattern-match CLI output without stripping
+  # formatting: what you see in a terminal and what arrives in a pipe are not
+  # the same bytes.
   local name="$1" limit="$2" i=0
   while [ "${i}" -lt "${limit}" ]; do
     if timeout 10 ros2 control list_controllers 2>/dev/null \
@@ -130,9 +243,32 @@ wait_for_controller_active() {
   return 1
 }
 
-run_one_mode() {
-  local mode="$1"
-  local controller topic
+dump_sim_failure() {
+  local tag="$1"
+  echo ""
+  echo "   ---- simulation launch log, last 40 lines ----"
+  tail -40 "/tmp/autotest_sim_${tag}.log" 2>/dev/null | sed 's/^/   | /'
+  echo "   ---- gazebo server log (where PLUGIN failures are recorded) ----"
+  # Plugin load exceptions do not appear in the launch terminal. They go
+  # here. This is the single most useful file when nothing comes up.
+  tail -30 ~/.gazebo/server-11345/default.log 2>/dev/null | sed 's/^/   | /' \
+    || echo "   | (no gazebo server log found)"
+  echo "   ---- anything mentioning control or plugin ----"
+  grep -iE "plugin|controller_manager|ros2_control|exception|error" \
+    "/tmp/autotest_sim_${tag}.log" 2>/dev/null | tail -20 | sed 's/^/   | /'
+  echo "   ---- nodes / services present ----"
+  timeout 10 ros2 node list 2>&1 | sed 's/^/   | /'
+  timeout 10 ros2 service list 2>&1 | grep -i controller | sed 's/^/   | /' \
+    || echo "   | no controller_manager services at all"
+  echo "   ----------------------------------------------"
+}
+
+run_one() {
+  local c="$1"
+  local mode profile controller topic tag
+  mode=$(config_mode "${c}")
+  profile=$(config_profile "${c}")
+  tag="${c}_${mode}_${profile}"
 
   if [ "${mode}" = "effort" ]; then
     controller="leg_trajectory_controller"
@@ -143,7 +279,8 @@ run_one_mode() {
 
   echo ""
   echo "############################################################"
-  echo "#  MODE: ${mode}"
+  echo "#  CONFIG ${c} : $(config_desc "${c}")"
+  echo "#  control_mode=${mode}  fix_base=false  sim_profile=${profile}"
   echo "############################################################"
 
   cleanup
@@ -152,34 +289,32 @@ run_one_mode() {
   echo "-- launching simulation (headless) ..."
   ros2 launch hexapod_bringup hexapod_sim.launch.py \
       control_mode:="${mode}" \
+      sim_profile:="${profile}" \
       fix_base:=false \
       gui:=false \
       rviz:=false \
-      > "/tmp/autotest_sim_${mode}.log" 2>&1 &
+      > "/tmp/autotest_sim_${tag}.log" 2>&1 &
   PIDS+=($!)
 
-  # On failure, PRINT the evidence rather than pointing at a file. A message
-  # that says "see the log" costs a whole round trip when the person running
-  # this is reporting results to someone else.
-  dump_failure() {
-    echo ""
-    echo "   ---- last 40 lines of the simulation log ----"
-    tail -40 "/tmp/autotest_sim_${mode}.log" 2>/dev/null | sed 's/^/   | /'
-    echo "   ---- controllers as seen right now ----"
-    timeout 10 ros2 control list_controllers 2>&1 | sed 's/^/   | /'
-    echo "   ---- nodes ----"
-    timeout 10 ros2 node list 2>&1 | sed 's/^/   | /'
-    echo "   ---------------------------------------------"
-  }
+  if ! wait_for_controller_manager 60; then
+    echo "   FAILED: no controller_manager service after 60 s."
+    echo "   This is a PLUGIN LOAD failure, not a controller failure:"
+    echo "   gazebo_ros2_control never instantiated. Usual causes are a"
+    echo "   missing controller YAML, a missing .so, or the robot never"
+    echo "   being spawned into the world."
+    dump_sim_failure "${tag}"
+    return 30
+  fi
+  echo "   controller_manager is up"
 
-  if ! wait_for_controller_active "joint_state_broadcaster" 90; then
+  if ! wait_for_controller_active "joint_state_broadcaster" 60; then
     echo "   FAILED: joint_state_broadcaster never became active."
-    dump_failure
+    dump_sim_failure "${tag}"
     return 20
   fi
-  if ! wait_for_controller_active "${controller}" 90; then
+  if ! wait_for_controller_active "${controller}" 60; then
     echo "   FAILED: ${controller} never became active."
-    dump_failure
+    dump_sim_failure "${tag}"
     return 21
   fi
   if ! wait_for_topic /joint_states 30; then
@@ -189,8 +324,11 @@ run_one_mode() {
   echo "   controllers active, joint states flowing"
 
   echo "-- launching gait node ..."
+  # control_mode is passed so walk.launch.py derives the matching topic.
+  # command_topic is passed too, belt and braces: publishing to a topic with
+  # no subscriber is silent, and it has already cost one full test cycle.
   ros2 launch hexapod_bringup walk.launch.py \
-      command_type:=trajectory \
+      control_mode:="${mode}" \
       command_topic:="${topic}" \
       cycle_time:=3.0 \
       step_height:=0.025 \
@@ -198,50 +336,32 @@ run_one_mode() {
       max_linear_speed:=0.04 \
       max_angular_speed:=0.25 \
       startup_ramp:=4.0 \
-      > "/tmp/autotest_gait_${mode}.log" 2>&1 &
+      > "/tmp/autotest_gait_${tag}.log" 2>&1 &
   PIDS+=($!)
 
-  # The gait node blocks until it has a start pose, then ramps. Give the ramp
-  # time to finish before measuring, or the baseline captures the ramp motion
-  # and reports it as drift.
   echo "-- waiting for startup ramp ..."
   sleep 12
 
-  if ! grep -q "Ramp complete" "/tmp/autotest_gait_${mode}.log" 2>/dev/null; then
+  if grep -q "NOTHING IS SUBSCRIBED" "/tmp/autotest_gait_${tag}.log" 2>/dev/null; then
+    echo "   FAILED: gait node reports nobody is listening to ${topic}."
+    grep -A6 "NOTHING IS SUBSCRIBED" "/tmp/autotest_gait_${tag}.log" | sed 's/^/   | /'
+    return 23
+  fi
+  if ! grep -q "Ramp complete" "/tmp/autotest_gait_${tag}.log" 2>/dev/null; then
     echo "   WARNING: ramp did not report completion. Continuing anyway."
-    tail -5 "/tmp/autotest_gait_${mode}.log" | sed 's/^/     /'
+    tail -8 "/tmp/autotest_gait_${tag}.log" | sed 's/^/     /'
   fi
 
   echo "-- measuring ..."
   python3 "${TOOLS}/measure_walk.py" \
-      --speed "${SPEED}" \
-      --baseline "${BASELINE}" \
-      --drive "${DRIVE}" \
-      --settle "${SETTLE}"
+      --speed "${SPEED}" --baseline "${BASELINE}" \
+      --drive "${DRIVE}" --settle "${SETTLE}"
   local rc=$?
 
-  # Codes 17 (robot absent) and 10 (ejected) mean the failure is in the
-  # SIMULATION, not the gait, so the simulator's own log is the evidence.
-  # Printing it here saves a round trip; asking someone to go and fetch a
-  # file costs an entire exchange.
   if [ "${rc}" = "17" ] || [ "${rc}" = "10" ]; then
-    echo ""
-    echo "   ---- simulation log, last 50 lines ----"
-    tail -50 "/tmp/autotest_sim_${mode}.log" 2>/dev/null | sed 's/^/   | /'
+    dump_sim_failure "${tag}"
     echo "   ---- gait node log, last 25 lines ----"
-    tail -25 "/tmp/autotest_gait_${mode}.log" 2>/dev/null | sed 's/^/   | /'
-    echo "   ---- who publishes /odom, and what does it say ----"
-    timeout 10 ros2 topic info /odom --verbose 2>&1 \
-      | grep -E "Publisher count|Node name|Reliability" | sed 's/^/   | /'
-    timeout 10 ros2 topic echo /odom --once --field pose.pose 2>&1 \
-      | head -20 | sed 's/^/   | /'
-    echo "   ---- p3d plugin loaded? ----"
-    grep -iE "p3d|ground_truth" "/tmp/autotest_sim_${mode}.log" 2>/dev/null \
-      | head -5 | sed 's/^/   | /'
-    echo "   ---- models actually present in gazebo ----"
-    timeout 10 ros2 service call /get_model_list gazebo_msgs/srv/GetModelList \
-      2>&1 | tail -5 | sed 's/^/   | /'
-    echo "   ---------------------------------------"
+    tail -25 "/tmp/autotest_gait_${tag}.log" 2>/dev/null | sed 's/^/   | /'
   fi
 
   cleanup
@@ -249,39 +369,54 @@ run_one_mode() {
 }
 
 echo "============================================================"
-echo " AUTOMATED WALK TEST"
+echo " AUTOMATED WALK TEST   $(date)"
+echo " configurations: ${CONFIGS}"
 echo " speed ${SPEED} m/s   baseline ${BASELINE}s   drive ${DRIVE}s"
 echo "============================================================"
 
+if ! preflight; then
+  echo ""
+  echo "PREFLIGHT FAILED. Nothing was launched, because every check above"
+  echo "fails in a way that looks identical at runtime. Fix the above first."
+  exit 1
+fi
+
 declare -A RESULTS
-for m in ${MODES}; do
-  run_one_mode "${m}"
-  RESULTS[${m}]=$?
+for c in ${CONFIGS}; do
+  run_one "${c}"
+  RESULTS[${c}]=$?
 done
 
 echo ""
 echo "============================================================"
 echo " SUMMARY"
 echo "============================================================"
-for m in ${MODES}; do
-  rc="${RESULTS[${m}]}"
+for c in ${CONFIGS}; do
+  rc="${RESULTS[${c}]}"
   case "${rc}" in
-    0)  msg="WALKING -- this mode works" ;;
+    0)  msg="WALKING" ;;
     10) msg="ejected / tipped over" ;;
     11) msg="drifts while standing still" ;;
     12) msg="walks but feet slip" ;;
     13) msg="marches in place, body does not travel" ;;
     14) msg="wanders, motion not coordinated" ;;
-    15) msg="legs not moving at all -- command never reached the gait" ;;
+    15) msg="legs not moving -- command never reached the gait" ;;
     16) msg="steps on the spot -- no stride commanded" ;;
     17) msg="ROBOT NOT IN THE WORLD -- model missing or destroyed" ;;
     2)  msg="no odometry -- sim did not come up" ;;
     3)  msg="simulation time frozen" ;;
-    2[0-2]) msg="startup failed, see /tmp/autotest_sim_${m}.log" ;;
+    20) msg="joint_state_broadcaster never activated" ;;
+    21) msg="leg controller never activated" ;;
+    22) msg="no /joint_states" ;;
+    23) msg="nothing subscribed to the command topic" ;;
+    30) msg="NO controller_manager -- gazebo_ros2_control failed to load" ;;
     *)  msg="unknown result (code ${rc})" ;;
   esac
-  printf '  %-10s %s\n' "${m}" "${msg}"
+  printf '  %-3s %-46s %s\n' "${c}" "$(config_desc "${c}")" "${msg}"
 done
 echo "============================================================"
 echo ""
-echo "Logs: /tmp/autotest_sim_*.log  /tmp/autotest_gait_*.log"
+echo " Report written to: ${REPORT}"
+echo " Paste that one file. Per-run logs, if they are needed:"
+echo "   /tmp/autotest_sim_*.log   /tmp/autotest_gait_*.log"
+echo "============================================================"
