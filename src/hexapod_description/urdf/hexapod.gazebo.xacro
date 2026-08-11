@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<!--
+  hexapod.gazebo.xacro : simulation-only sensors and ground truth.
+  ==========================================================================
+  WHY GROUND TRUTH ODOMETRY IS NOT OPTIONAL HERE
+
+  Right now there is no way to tell whether the robot is WALKING or merely
+  CYCLING ITS LEGS. RViz cannot answer the question: its fixed frame is
+  base_link, and base_link is the robot, so by construction the robot never
+  appears to move. Everything else moves around it. A robot skidding in
+  place and a robot striding forward look identical.
+
+  That is not a display setting to fix; it is a missing frame. Nothing in
+  the stack currently knows where the body is in the world. robot_state
+  publisher only knows joint angles, so it can only produce transforms from
+  base_link downwards.
+
+  The p3d plugin ("position 3D") reads the body's true pose directly out of
+  the physics engine and publishes it as nav_msgs/Odometry. On real hardware
+  this would have to come from an IMU plus leg odometry, or a motion capture
+  rig. In simulation we can simply ask.
+
+  Ground truth is exactly what you want for VERIFICATION, as opposed to for
+  control. It lets you answer the only question that matters about a gait:
+
+      does the achieved body velocity match the commanded body velocity?
+
+  and it gives you a plot for the report that is far more convincing than a
+  video. Do not feed it back into a controller: that would be cheating, and
+  it would hide precisely the drift a real robot suffers.
+==========================================================================  -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <gazebo>
+    <plugin name="ground_truth_odom" filename="libgazebo_ros_p3d.so">
+      <ros>
+        <namespace>/</namespace>
+        <remapping>odom:=odom</remapping>
+      </ros>
+
+      <!-- Which link to report. base_link is the robot's root, so its pose
+           is the body pose. -->
+      <body_name>base_link</body_name>
+
+      <!-- Report relative to the world origin, i.e. absolute position. -->
+      <frame_name>world</frame_name>
+
+      <update_rate>50.0</update_rate>
+
+      <!-- Zero noise: this is a measurement instrument, not a simulated
+           sensor. If you later want to test robustness to noisy state
+           estimation, add noise HERE rather than degrading the controller,
+           so the two effects stay separable. -->
+      <gaussian_noise>0.0</gaussian_noise>
+    </plugin>
+  </gazebo>
+
+</robot>

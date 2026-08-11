@@ -35,7 +35,20 @@ Visualization Manager:
       Description Source: Topic
       Description Topic:
         Depth: 5
-        Durability Policy: Volatile
+        # MUST be Transient Local.
+        #
+        # robot_state_publisher publishes /robot_description ONCE, latched
+        # (TRANSIENT_LOCAL durability), because the model does not change.
+        # A Volatile subscriber only receives messages published AFTER it
+        # connects, so it never sees that single latched message. RViz then
+        # sits waiting forever and displays nothing at all, with no error:
+        # from its point of view the topic simply has no data yet.
+        #
+        # This is the most common "RViz is blank but everything else works"
+        # cause in ROS 2, and the QoS mismatch is invisible unless you run
+        # `ros2 topic info /robot_description --verbose` and compare the
+        # publisher's and subscriber's durability.
+        Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /robot_description

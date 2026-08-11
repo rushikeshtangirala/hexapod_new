@@ -1,28 +1,19 @@
-# colcon build artefacts -- never commit, never sync to Windows/OneDrive
+# ROS 2 / colcon build artefacts
 build/
 install/
 log/
-
-# Python
+*.pyc
 __pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
 
-# Editor
+# Editor / OS
 .vscode/
-*.code-workspace
 .idea/
-
-# OS / cloud sync noise
-.DS_Store
+*.swp
 Thumbs.db
 desktop.ini
+~$*
 
-# Generated/intermediate model files (regenerate from xacro; do not commit)
-*.urdf.generated
-/src/**/urdf/*.generated.urdf
-
-# Large binary meshes are committed deliberately -- if the repo gets heavy,
-# switch to git-lfs rather than ignoring them:
-#   git lfs track "*.stl" "*.dae"
+# Superseded STL exports kept only for provenance.
+# The URDF references the re-origined versions (coxa.stl, femur_lower.stl,
+# femur_upper.stl, tibia.stl, body.stl). Files with spaces in the name break
+# package:// resolution and must never be referenced.

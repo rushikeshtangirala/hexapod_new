@@ -26,7 +26,7 @@ find_package(ament_cmake REQUIRED)
 # exists in src/. Directories are now created up front and installed
 # unconditionally, which is evaluated every build.
 install(
-  DIRECTORY urdf meshes rviz launch config
+  DIRECTORY urdf meshes rviz launch config scripts
   DESTINATION share/${PROJECT_NAME}
 )
 

@@ -1,0 +1,534 @@
+#!/usr/bin/env python3
+"""
+hexapod_sim.launch.py : full simulation bringup.
+
+WHAT THIS ORCHESTRATES, AND WHY THE ORDER MATTERS
+=================================================
+Five things must start, and three of them have hard ordering dependencies.
+Getting the order wrong is the single biggest source of "it launched but
+nothing works" in ros2_control projects.
+
+  1. gzserver + gzclient        the physics engine and its GUI
+  2. robot_state_publisher      owns the `robot_description` parameter and
+                                publishes TF
+  3. spawn_entity               injects the robot into the running world
+  4. joint_state_broadcaster    starts publishing /joint_states
+  5. leg_position_controller    accepts joint commands
+
+WHY NOT JUST LAUNCH ALL FIVE AT ONCE
+
+  * spawn_entity reads the robot model from the `robot_description` TOPIC,
+    which robot_state_publisher publishes. Start them simultaneously and
+    spawn_entity often wins the race and finds nothing.
+
+  * The controller_manager does not exist as a separate process here. It is
+    created by libgazebo_ros2_control INSIDE gzserver, and only at the moment
+    the robot model is inserted into the world. So there is no
+    /controller_manager service to talk to until spawn_entity has finished.
+    A controller spawner launched earlier fails with "Controller manager not
+    available" and then gives up.
+
+The fix is event driven rather than sleep based: RegisterEventHandler with
+OnProcessExit chains each stage to the completion of the previous one. Using
+TimerAction with a fixed delay instead is the usual workaround and it is
+fragile, because the correct delay depends on machine speed. Under WSL2 with
+software rendering, gzserver startup varies by many seconds.
+
+USAGE
+=====
+    ros2 launch hexapod_bringup hexapod_sim.launch.py
+    ros2 launch hexapod_bringup hexapod_sim.launch.py gui:=false   # headless
+    ros2 launch hexapod_bringup hexapod_sim.launch.py rviz:=true
+"""
+
+import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import (
+    AppendEnvironmentVariable,
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+    TimerAction,
+)
+from launch.conditions import IfCondition, UnlessCondition
+from launch.event_handlers import OnProcessExit
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import (
+    Command,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.substitutions import FindPackageShare
+
+
+def generate_launch_description() -> LaunchDescription:
+    desc_share = FindPackageShare("hexapod_description")
+    gz_share = FindPackageShare("hexapod_gazebo")
+
+    model_path = PathJoinSubstitution([desc_share, "urdf", "hexapod.urdf.xacro"])
+    world_path = PathJoinSubstitution([gz_share, "worlds", "hexapod.world"])
+    rviz_config = PathJoinSubstitution([desc_share, "rviz", "hexapod.rviz"])
+
+    # ------------------------------------------------------------------
+    # GAZEBO_MODEL_PATH : why this is required
+    #
+    # Our URDF refers to meshes as
+    #     package://hexapod_description/meshes/visual/coxa.stl
+    # which RViz resolves through the ament index. Gazebo never sees that
+    # URI. When spawn_entity hands the URDF to Gazebo, sdformat's URDF
+    # parser REWRITES every package:// URI into
+    #     model://hexapod_description/meshes/visual/coxa.stl
+    # and model:// is resolved against GAZEBO_MODEL_PATH, not the ament
+    # index. If the workspace share directory is not on that path, Gazebo
+    # reports "URI not supported by Fuel" and then, misleadingly,
+    # "No mesh specified".
+    #
+    # get_package_share_directory returns  <prefix>/share/hexapod_description
+    # We need its PARENT,                  <prefix>/share
+    # so that model://hexapod_description/... appends correctly.
+    #
+    # This is the single most common Gazebo Classic mesh failure, and the
+    # error message never mentions the real cause.
+    # ------------------------------------------------------------------
+    gazebo_model_path = os.path.dirname(
+        get_package_share_directory("hexapod_description")
+    )
+
+    # ------------------------------------------------------------------
+    # Expand xacro at launch time. sim:=true pulls in the ros2_control block
+    # and the gazebo_ros2_control plugin.
+    #
+    # NOTE: we call xacro_nocomment.py, not xacro directly.
+    #
+    # gazebo_ros2_control re-passes this entire string to the
+    # controller_manager node as a --param command line override, and rcl
+    # parses that value with a YAML scalar parser. Prose comments break it:
+    # a line ending in ':' reads as the start of a YAML mapping, and the '|'
+    # characters in xacro's autogenerated banner read as a literal block
+    # indicator. The failure mode is an unhelpful
+    #     "Couldn't parse parameter override rule"
+    # followed by no controller_manager ever being created.
+    #
+    # Stripping comments from the GENERATED urdf costs nothing semantically
+    # and keeps the source files fully documented.
+    #
+    # display.launch.py deliberately still uses plain xacro, since RViz has
+    # no such constraint and the comments are useful when inspecting output.
+    # ------------------------------------------------------------------
+    xacro_wrapper = PathJoinSubstitution([
+        desc_share, "scripts", "xacro_nocomment.py",
+    ])
+
+    robot_description = ParameterValue(
+        Command([
+            "python3 ", xacro_wrapper, " ", model_path,
+            " sim:=true",
+            " fix_base:=", LaunchConfiguration("fix_base"),
+            " fix_base_height:=", LaunchConfiguration("fix_base_height"),
+            " control_mode:=", LaunchConfiguration("control_mode"),
+        ]),
+        value_type=str,
+    )
+
+    # ------------------------------------------------------------------
+    # 1. Gazebo
+    # ------------------------------------------------------------------
+    gazebo = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare("gazebo_ros"), "launch", "gazebo.launch.py",
+            ])
+        ]),
+        launch_arguments={
+            "world": world_path,
+            "verbose": "true",
+            "gui": LaunchConfiguration("gui"),
+
+            # NOT PAUSED. This line used to read "pause": "true", and removing
+            # it is a deliberate simplification rather than an oversight.
+            #
+            # THE PROBLEM IT WAS SOLVING
+            # Controllers take one to two seconds to load, configure and
+            # activate. Nothing writes joint commands during that window, so
+            # the joints were free and gravity collapsed the robot. Measured:
+            # femur 1.80 rad instead of 1.62, body 7 cm low. The startup ramp
+            # then lifted the body back against six feet held at mu = 2.0 and
+            # levered the robot into the air.
+            #
+            # WHY PAUSING WAS THE WRONG SOLUTION
+            # controller_manager applies a controller switch inside update(),
+            # and gazebo_ros2_control drives update() from the world-update
+            # event, which a PAUSED world never emits. So activations
+            # requested during the pause were silently discarded.
+            # joint_state_broadcaster stayed 'inactive' forever, /joint_states
+            # never published, and the gait node had no start pose. The cure
+            # disabled the measurement.
+            #
+            # WHAT ACTUALLY FIXED IT
+            # joint_friction 0.01 -> 3.0 N*m in common_properties.xacro. The
+            # legs now hold themselves while unpowered, which is what a real
+            # geared servo does. Measured sag afterwards: 0.0069 rad, down
+            # from 0.1798. There is nothing left for a pause to protect
+            # against, so the pause and its whole unpause-sequencing dance
+            # come out.
+            #
+            # General lesson worth keeping: this was a workaround for a
+            # modelling error. It suppressed the symptom, broke something
+            # else, and delayed finding the one wrong number that caused it.
+        }.items(),
+    )
+
+    # Released after the controllers are up. Until then the world is frozen
+    # and the robot cannot move at all.
+    unpause_physics = ExecuteProcess(
+        cmd=["ros2", "service", "call",
+             "/unpause_physics", "std_srvs/srv/Empty"],
+        output="screen",
+    )
+
+    # ------------------------------------------------------------------
+    # 2. robot_state_publisher
+    #
+    # use_sim_time MUST be true here and in every other node. Gazebo
+    # publishes /clock; a node on wall time while Gazebo runs at 0.4x real
+    # time will compute TF timestamps that drift steadily out of the buffer,
+    # and RViz reports "extrapolation into the future" errors that look like
+    # a model problem but are a clock problem.
+    # ------------------------------------------------------------------
+    robot_state_publisher = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        name="robot_state_publisher",
+        output="screen",
+        parameters=[{
+            "robot_description": robot_description,
+            "use_sim_time": True,
+        }],
+    )
+
+    # ------------------------------------------------------------------
+    # 3. Spawn
+    #
+    # -z 0.30 drops the robot from above the ground rather than starting it
+    # interpenetrating the floor. A body spawned intersecting the ground
+    # plane gets ejected by the contact solver at high speed; this is the
+    # classic "robot launches into orbit on spawn".
+    #
+    # 0.30 m clears the fully extended leg reach (coxa 0.15 + femur 0.117 +
+    # tibia 0.15 = 0.417 m, but legs start horizontal so the vertical extent
+    # is small). It falls a few centimetres and settles.
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # SPAWN THE ROBOT ALREADY STANDING.
+    #
+    # This is the fix for "the robot stands, then flies out of the world".
+    #
+    # gazebo_ros2_control implements a position command interface with
+    # gazebo's SetPosition(), which TELEPORTS the joint to the commanded
+    # angle rather than solving for the torque that would take it there.
+    # Teleporting is fine in free space. It is catastrophic in contact.
+    #
+    # The sequence that breaks it:
+    #   1. robot spawns with all joints at zero, legs straight out sideways
+    #   2. gravity flattens it onto the ground
+    #   3. the first position command arrives and all 18 joints jump to the
+    #      stance pose in a single physics step
+    #   4. the teleported links land intersecting the ground plane
+    #   5. ODE resolves that penetration the only way it can: by applying an
+    #      enormous separating impulse
+    #   6. the robot is launched across the world
+    #
+    # No amount of contact tuning fixes step 3, because the energy is
+    # injected by the kinematic teleport itself, not by the contact model.
+    # The cure is to remove the discontinuity: spawn_entity accepts
+    # -J <joint> <radians>, so the robot enters the world already in the
+    # stance pose and there is never a jump to resolve.
+    #
+    # Angles are the verified stance solution from tools/verify_ik.py:
+    #   coxa 0.0, femur +1.2207 rad (69.94 deg), tibia -1.2174 rad (-69.75)
+    #
+    # -z 0.15 rather than 0.30: with the legs already folded into stance the
+    # feet sit 0.11 m below base_link, so this drops the robot ~4 cm. Enough
+    # to settle onto the ground, small enough that the landing is gentle.
+    # ------------------------------------------------------------------
+    # The initial joint angles are NOT set here. spawn_entity.py in ROS 2 does
+    # not reliably accept ROS 1's -J flag, and an unrecognised argument makes
+    # argparse abort, which kills the spawn and therefore the controller
+    # manager and therefore everything downstream.
+    #
+    # They are set instead via <param name="initial_value"> on each position
+    # state_interface in hexapod.ros2_control.xacro. That is the documented
+    # ros2_control mechanism, it is read by GazeboSystem during hardware
+    # initialisation, and it works identically on real hardware.
+    # ------------------------------------------------------------------
+    # SPAWN HEIGHT IS NOT A FREE PARAMETER. It is tied to the stance.
+    #
+    #     foot contact height  =  spawn_z  -  stance_depth  -  foot_radius
+    #                          =  spawn_z  -  0.180         -  0.015
+    #
+    # It MUST be positive. If it is negative the feet appear inside the
+    # ground plane, and ODE removes that interpenetration the only way it
+    # can: with a separating impulse proportional to the depth. The robot is
+    # thrown across the world the instant it spawns. This is not drift and no
+    # amount of friction, stiffness or solver tuning affects it.
+    #
+    # This exact bug occurred once already: the stance depth was changed from
+    # 0.11 to 0.18 while spawn_z stayed at 0.15, putting the feet 45 mm
+    # underground. Two numbers in different files that must move together are
+    # a trap, which is why the relationship is written out above.
+    #
+    # 0.22 leaves the feet 25 mm clear. Enough to settle onto the ground
+    # under gravity, small enough that the landing is gentle.
+    #
+    # If you change stance_height in common_properties.xacro, change this.
+    # ------------------------------------------------------------------
+    spawn_entity = Node(
+        package="gazebo_ros",
+        executable="spawn_entity.py",
+        name="spawn_hexapod",
+        output="screen",
+        arguments=[
+            "-topic", "robot_description",
+            "-entity", "hexapod",
+            "-z", LaunchConfiguration("spawn_height"),
+        ],
+    )
+
+    # ------------------------------------------------------------------
+    # 4 and 5. Controller spawners
+    #
+    # `spawner` loads, configures and activates in one call. It talks to the
+    # controller_manager living inside gzserver, so it cannot run before the
+    # robot exists in the world.
+    # ------------------------------------------------------------------
+    # --controller-manager-timeout: the spawner gives up if the manager does
+    # not appear within this many seconds. The default is short, and under
+    # WSL2 with software rendering gzserver can take far longer than that to
+    # finish loading the plugin. A generous timeout turns an intermittent
+    # race into a deterministic startup.
+    joint_state_broadcaster_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        name="joint_state_broadcaster_spawner",
+        output="screen",
+        arguments=[
+            "joint_state_broadcaster",
+            "--controller-manager", "/controller_manager",
+            "--controller-manager-timeout", "60",
+        ],
+    )
+
+    # Which leg controller to spawn depends on control_mode. Both are
+    # declared in controllers.yaml; spawning the wrong one fails because the
+    # command interfaces it claims do not exist in the hardware.
+    effort_mode = PythonExpression(
+        ["'", LaunchConfiguration("control_mode"), "' == 'effort'"]
+    )
+
+    leg_trajectory_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        name="leg_trajectory_controller_spawner",
+        output="screen",
+        arguments=[
+            "leg_trajectory_controller",
+            "--controller-manager", "/controller_manager",
+            "--controller-manager-timeout", "60",
+        ],
+        condition=IfCondition(effort_mode),
+    )
+
+    leg_position_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        name="leg_position_controller_spawner",
+        output="screen",
+        arguments=[
+            "leg_position_controller",
+            "--controller-manager", "/controller_manager",
+            "--controller-manager-timeout", "60",
+        ],
+        condition=UnlessCondition(effort_mode),
+    )
+
+    rviz = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        output="screen",
+        arguments=["-d", rviz_config],
+        parameters=[{"use_sim_time": True}],
+        condition=IfCondition(LaunchConfiguration("rviz")),
+    )
+
+    return LaunchDescription([
+        # Gazebo GUI on by default: this is the demonstration view.
+        #
+        # It previously failed with "Failed to initialize scene", but the
+        # cause was OGRE being unable to find its shader library because
+        # GAZEBO_RESOURCE_PATH was unset. tools/wsl_env_setup.sh now sources
+        # /usr/share/gazebo/setup.sh, which fixes it at the source.
+        #
+        # If it still fails, run tools/test_gazebo_gui.sh, which isolates
+        # gzclient from the rest of the stack and works through the possible
+        # causes one variable at a time.
+        DeclareLaunchArgument("gui", default_value="true",
+                              description="Run the Gazebo client GUI."),
+        DeclareLaunchArgument("rviz", default_value="false",
+                              description="Also start RViz2."),
+
+        # fix_base:=true welds the body to the world. Use it to demonstrate
+        # joint control and the gait cycle without the floating-base drift
+        # caused by kinematic position commands. See the long note in
+        # hexapod.urdf.xacro.
+        # effort  : joints driven by torque through a PID. Works with a
+        #           floating base. This is the real robot.
+        # position: joints teleported by Gazebo. Only stable with
+        #           fix_base:=true. Kept as the known-working fallback.
+        # DEFAULTS ARE THE CONFIGURATION THAT WORKS.
+        #
+        # position + fix_base is the validated setup: it demonstrates all 18
+        # joints, the full ros2_control pipeline, inverse kinematics and the
+        # tripod gait under load, reliably and repeatably.
+        #
+        # effort + free base is implemented and is the correct long-term
+        # answer, but its PID gains still need tuning. It is not the default
+        # because a default should be the thing you can rely on, not the
+        # thing you are still working on.
+        #
+        # To work on it:  control_mode:=effort fix_base:=false
+        DeclareLaunchArgument("control_mode", default_value="position",
+                              description="position (validated) or effort "
+                                          "(free base, gains being tuned)."),
+
+        DeclareLaunchArgument("fix_base", default_value="true",
+                              description="Weld base_link to the world. "
+                                          "Removes floating-base drift; the "
+                                          "robot cannot then translate."),
+
+        # 0.125 m puts the stance feet exactly on the ground: foot centre is
+        # 0.11 below base_link, plus the 0.015 sphere radius. Raise it to
+        # 0.20 to suspend the robot and watch the leg trajectories in free
+        # air, which is useful for checking the swing profile without
+        # contact confusing the picture.
+        # 0.195 = stance depth 0.18 + foot sphere radius 0.015. Puts the
+        # stance feet exactly on the ground plane. Raise it to suspend the
+        # robot and inspect the swing trajectory without contact.
+        # Free-base spawn height. Must exceed stance depth (0.180) plus foot
+        # radius (0.015) or the feet spawn underground and the robot is
+        # ejected. See the long note next to spawn_entity.
+        DeclareLaunchArgument("spawn_height", default_value="0.22",
+                              description="Free-base spawn height, metres. "
+                                          "Must be > 0.195."),
+
+        DeclareLaunchArgument("fix_base_height", default_value="0.195",
+                              description="Height of the world anchor. 0.195 "
+                                          "puts the feet on the ground."),
+
+        # controllers:=false spawns NO controllers, so nothing writes to the
+        # joints at all. This is the decisive diagnostic: if the robot still
+        # drifts with zero commands being issued, the cause is contact or
+        # solver behaviour. If it is steady without controllers and drifts
+        # with them, the cause is the position interface teleporting joints.
+        DeclareLaunchArgument("controllers", default_value="true",
+                              description="Spawn the controllers. Set false "
+                                          "to isolate physics from control."),
+
+        # MUST come before the gazebo include: gzserver and gzclient read
+        # GAZEBO_MODEL_PATH once at startup.
+        AppendEnvironmentVariable("GAZEBO_MODEL_PATH", gazebo_model_path),
+
+        gazebo,
+        robot_state_publisher,
+        spawn_entity,
+
+        # ---- ordering chain ----
+        #
+        # UNPAUSE BEFORE SPAWNING ANY CONTROLLER. THIS ORDER IS LOAD-BEARING.
+        #
+        # The previous version spawned the controllers first and unpaused
+        # afterwards, reasoning that nothing can fall while physics is frozen.
+        # That reasoning was right about gravity and wrong about ros2_control.
+        #
+        # controller_manager does not activate a controller inside the service
+        # call. The call records a PENDING SWITCH, and the switch is applied
+        # inside controller_manager::update(). gazebo_ros2_control drives that
+        # update from Gazebo's world-update event, which a PAUSED world never
+        # emits. So an activation requested during the pause is simply never
+        # applied.
+        #
+        # Observed exactly that: joint_state_broadcaster (spawned during the
+        # pause) sat 'inactive' forever, while leg_position_controller
+        # (spawned late enough to land after the unpause timer) came up
+        # 'active'. Identical spawner arguments, opposite outcomes, decided
+        # only by which side of the unpause they happened to fall on.
+        #
+        # With no broadcaster there is no /joint_states, so the gait node has
+        # no start pose, so its ramp cannot run -- which is the failure two
+        # layers further down that we spent this whole session chasing.
+        #
+        # So: release physics as soon as the robot exists, and activate
+        # controllers into a RUNNING simulator where switches actually apply.
+        # Both start when the robot exists, and NEITHER waits for the other.
+        #
+        # unpause_physics is now only insurance -- the world is not started
+        # paused any more, and calling unpause on a running world is a no-op.
+        #
+        # It is deliberately NOT in the dependency chain. The previous version
+        # hung joint_state_broadcaster off OnProcessExit(unpause_physics), so
+        # a slow or failed service call meant the broadcaster was never
+        # spawned at all, and every downstream node then waited forever on
+        # /joint_states. That is a single point of failure guarding against a
+        # condition that no longer exists. Insurance must not be load-bearing.
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=spawn_entity,
+                on_exit=[unpause_physics],
+            ),
+        ),
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=spawn_entity,
+                on_exit=[joint_state_broadcaster_spawner],
+            ),
+            condition=IfCondition(LaunchConfiguration("controllers")),
+        ),
+
+        # leg controller only after the broadcaster, so that if something
+        # fails you can tell WHICH stage failed from the log order.
+        #
+        # NOTE ON THE COLLAPSE WINDOW
+        # Between unpause and activation the joints are unheld, so the robot
+        # sags. That is the sag we measured before: femur 1.80 rad instead of
+        # 1.62, body about 7 cm low.
+        #
+        # It is now survivable, and it was not before. The gait node's startup
+        # ramp exists precisely to recover from an unknown start pose, but it
+        # had never once run -- it needs /joint_states, and the broadcaster
+        # was never active, so every single launch published a STEP command
+        # instead of a ramp. With the broadcaster fixed the ramp finally does
+        # what it was written to do: capture the sagged pose and ease up to
+        # stance over several seconds instead of teleporting there.
+        #
+        # If the sag still proves too violent to recover from, the delta table
+        # printed by 'walk_free.sh hold' says so directly, and the answer is
+        # to slow the ramp or soften foot friction -- not to re-pause.
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=joint_state_broadcaster_spawner,
+                on_exit=[
+                    leg_trajectory_controller_spawner,
+                    leg_position_controller_spawner,
+                ],
+            ),
+            condition=IfCondition(LaunchConfiguration("controllers")),
+        ),
+
+        rviz,
+    ])

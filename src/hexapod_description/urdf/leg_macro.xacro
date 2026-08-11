@@ -69,20 +69,39 @@
          COXA. Attaches to the body, rotates about vertical Z.
     ================================================================ -->
     <link name="${prefix}_coxa_link">
-      <visual>
-        <!-- A URDF cylinder is defined along Z. Rotating +90 deg about Y
-             maps Z onto X, aligning it with our +X segment convention.
-             The xyz offset places the cylinder's CENTRE at half its
-             length, so the link frame sits at the JOINT, not at the middle
-             of the part. Link frame at the joint is what makes the
-             kinematics readable. -->
-        <origin xyz="${coxa_length/2} 0 0" rpy="0 ${pi/2} 0"/>
-        <geometry>
-          <cylinder radius="${coxa_radius}" length="${coxa_length}"/>
-        </geometry>
-        <material name="coxa_orange"/>
-      </visual>
+      <!-- VISUAL: CAD mesh if available, primitive otherwise.
+           xacro:if and xacro:unless are evaluated at expansion time, so the
+           generated URDF contains exactly one of these. There is no runtime
+           branch and no cost to keeping both paths in the source. Keeping
+           the primitive path alive matters: if a mesh ever fails to load,
+           flipping use_meshes to false gives you a working model instantly
+           instead of an empty RViz and a guess. -->
+      <xacro:if value="${use_meshes}">
+        <visual>
+          <origin xyz="${coxa_mesh_nudge}" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="${mesh_dir}/coxa.stl" scale="${mesh_scale}"/>
+          </geometry>
+          <material name="coxa_orange"/>
+        </visual>
+      </xacro:if>
+      <xacro:unless value="${use_meshes}">
+        <visual>
+          <!-- A URDF cylinder is defined along Z. Rotating +90 deg about Y
+               maps Z onto X, aligning it with our +X segment convention.
+               The xyz offset places the cylinder's CENTRE at half its
+               length, so the link frame sits at the JOINT, not at the
+               middle of the part. -->
+          <origin xyz="${coxa_length/2} 0 0" rpy="0 ${pi/2} 0"/>
+          <geometry>
+            <cylinder radius="${coxa_radius}" length="${coxa_length}"/>
+          </geometry>
+          <material name="coxa_orange"/>
+        </visual>
+      </xacro:unless>
 
+      <!-- COLLISION: always a primitive. See the policy note in
+           common_properties.xacro. -->
       <collision>
         <origin xyz="${coxa_length/2} 0 0" rpy="0 ${pi/2} 0"/>
         <geometry>
@@ -116,13 +135,37 @@
          FEMUR. The lift joint.
     ================================================================ -->
     <link name="${prefix}_femur_link">
-      <visual>
-        <origin xyz="${femur_length/2} 0 0" rpy="0 ${pi/2} 0"/>
-        <geometry>
-          <cylinder radius="${femur_radius}" length="${femur_length}"/>
-        </geometry>
-        <material name="femur_blue"/>
-      </visual>
+      <!-- The femur is TWO STLs on ONE link: the bracket and its cover
+           plate. A URDF link may carry any number of visual elements; they
+           are simply unioned. This is the correct way to represent a
+           multi part rigid assembly. Do NOT invent an extra link and a
+           fixed joint for the cover plate: that adds a body to the physics
+           tree for no kinematic reason. -->
+      <xacro:if value="${use_meshes}">
+        <visual>
+          <origin xyz="${femur_mesh_nudge}" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="${mesh_dir}/femur_lower.stl" scale="${mesh_scale}"/>
+          </geometry>
+          <material name="femur_blue"/>
+        </visual>
+        <visual>
+          <origin xyz="0 0 ${femur_upper_z}" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="${mesh_dir}/femur_upper.stl" scale="${mesh_scale}"/>
+          </geometry>
+          <material name="femur_blue"/>
+        </visual>
+      </xacro:if>
+      <xacro:unless value="${use_meshes}">
+        <visual>
+          <origin xyz="${femur_length/2} 0 0" rpy="0 ${pi/2} 0"/>
+          <geometry>
+            <cylinder radius="${femur_radius}" length="${femur_length}"/>
+          </geometry>
+          <material name="femur_blue"/>
+        </visual>
+      </xacro:unless>
 
       <collision>
         <origin xyz="${femur_length/2} 0 0" rpy="0 ${pi/2} 0"/>
@@ -153,13 +196,24 @@
          TIBIA. The extend joint, carries the foot.
     ================================================================ -->
     <link name="${prefix}_tibia_link">
-      <visual>
-        <origin xyz="${tibia_length/2} 0 0" rpy="0 ${pi/2} 0"/>
-        <geometry>
-          <cylinder radius="${tibia_radius}" length="${tibia_length}"/>
-        </geometry>
-        <material name="tibia_green"/>
-      </visual>
+      <xacro:if value="${use_meshes}">
+        <visual>
+          <origin xyz="${tibia_mesh_nudge}" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="${mesh_dir}/tibia.stl" scale="${mesh_scale}"/>
+          </geometry>
+          <material name="tibia_green"/>
+        </visual>
+      </xacro:if>
+      <xacro:unless value="${use_meshes}">
+        <visual>
+          <origin xyz="${tibia_length/2} 0 0" rpy="0 ${pi/2} 0"/>
+          <geometry>
+            <cylinder radius="${tibia_radius}" length="${tibia_length}"/>
+          </geometry>
+          <material name="tibia_green"/>
+        </visual>
+      </xacro:unless>
 
       <collision>
         <origin xyz="${tibia_length/2} 0 0" rpy="0 ${pi/2} 0"/>
@@ -253,10 +307,39 @@
     <gazebo reference="${prefix}_foot_link">
       <mu1>${foot_mu}</mu1>
       <mu2>${foot_mu}</mu2>
-      <kp>1000000.0</kp>
-      <kd>100.0</kd>
+
+      <!-- CONTACT STIFFNESS AND DAMPING. See the long note on max_step_size
+           in hexapod.world: kp and the physics timestep are a single joint
+           decision.
+
+           kp was 1e6, which against ~0.57 kg per foot gives a contact
+           natural frequency of 211 Hz. Sampled at 1000 Hz that is under 5
+           samples per oscillation, so the contact rings. Six ringing
+           friction cones sum to a small pseudo-random force, and a robot
+           standing still slowly yaws and slides away. That was the bug.
+
+           5e4 puts the contact at about 47 Hz, i.e. ~21 samples per period
+           at 1000 Hz, comfortably inside the stable region. Penetration
+           under load becomes 5.6 N / 5e4 = 0.1 mm, which is invisible and
+           entirely acceptable.
+
+           kd 500 gives a damping ratio near 1.5 against
+           c_crit = 2*sqrt(kp*m) = 337, so the contact is slightly
+           overdamped: it settles without bouncing rather than oscillating
+           about equilibrium. -->
+      <kp>50000.0</kp>
+      <kd>500.0</kd>
+
+      <!-- Allowed penetration before corrective force. A small tolerance
+           stops contacts flickering on and off between steps. -->
       <minDepth>0.001</minDepth>
-      <maxVel>0.0</maxVel>
+
+      <!-- Maximum contact correction velocity. 0 forbids the solver from
+           separating interpenetrating bodies at all, which makes feet stick
+           and then release unpredictably. 0.01 m/s lets it resolve gently
+           without the launch-into-orbit behaviour that a large value gives. -->
+      <maxVel>0.01</maxVel>
+
       <material>Gazebo/Black</material>
     </gazebo>
 

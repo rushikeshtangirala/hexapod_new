@@ -27,5 +27,20 @@
 
   <export>
     <build_type>ament_cmake</build_type>
+    <!--
+      Registers this package's share directory with Gazebo's model search
+      path. gazebo_ros reads these export tags and prepends them to
+      GAZEBO_MODEL_PATH when its environment hook is sourced.
+
+      Needed because sdformat rewrites package:// URIs into model:// during
+      URDF to SDF conversion, and model:// is resolved against
+      GAZEBO_MODEL_PATH rather than the ament index.
+
+      ${prefix} expands to the package's install prefix, so this resolves to
+      <ws>/install/hexapod_description/share, and Gazebo then finds
+      model://hexapod_description/meshes/visual/coxa.stl correctly.
+    -->
+    <gazebo_ros gazebo_model_path="${prefix}/share"/>
+    <gazebo_ros gazebo_media_path="${prefix}/share"/>
   </export>
 </package>

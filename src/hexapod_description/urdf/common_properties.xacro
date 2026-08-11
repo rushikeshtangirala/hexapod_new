@@ -211,13 +211,94 @@
   ==================================================================== -->
   <xacro:property name="coxa_lower"  value="${ -60.0 * pi / 180.0}"/>
   <xacro:property name="coxa_upper"  value="${  60.0 * pi / 180.0}"/>
-  <xacro:property name="femur_lower" value="${ -90.0 * pi / 180.0}"/>
-  <xacro:property name="femur_upper" value="${  90.0 * pi / 180.0}"/>
-  <xacro:property name="tibia_lower" value="${-150.0 * pi / 180.0}"/>
-  <xacro:property name="tibia_upper" value="${  30.0 * pi / 180.0}"/>
+  <!-- femur_upper raised from 90 to 120 degrees, and this is a MECHANICAL
+       requirement, not a software convenience.
 
-  <xacro:property name="joint_effort"   value="5.0"/>
+       With the coxa 0.150 m long and horizontal, the femur joint sits well
+       outboard of the body. To place a foot UNDERNEATH the robot rather than
+       out to the side, the femur must swing past vertical. The geometry:
+
+           t2 = beta + psi
+       where beta = atan2(depth, horizontal reach from the femur joint) and
+       psi is about 39 degrees for this link pair. Keeping t2 under 90 forces
+       beta under about 51 degrees, i.e. depth < 1.2x horizontal reach. The
+       result is a leg extended almost straight sideways, the foot barely
+       below the body, and a sprawled posture that cannot support weight
+       well.
+
+       At 120 degrees the femur can point past vertical, the tibia hangs
+       downward, and the robot stands properly.
+
+       WHAT THIS MEANS FOR THE BUILD: the femur servo must be assembled with
+       its horn offset so that its 180 degree travel maps to roughly -60 to
+       +120 degrees in this frame, rather than centred on zero. That is a
+       one-off decision at assembly. If your bracket cannot do it, lower this
+       number and accept a more sprawled stance; the simulation will then
+       honestly reflect the hardware. -->
+  <xacro:property name="femur_lower" value="${ -60.0 * pi / 180.0}"/>
+  <xacro:property name="femur_upper" value="${  90.0 * pi / 180.0}"/>
+  <xacro:property name="tibia_lower" value="${ -60.0 * pi / 180.0}"/>
+  <xacro:property name="tibia_upper" value="${ 130.0 * pi / 180.0}"/>
+
+  <!-- Raised 5.0 -> 7.0 when torque control became the primary mode.
+       WHY
+       In position mode this number is nearly decorative: SetPosition()
+       overrides joint state, so the limit is not really enforced. In EFFORT
+       mode it is the actual torque ceiling the PID may command, and the
+       budget has to cover three things at once:
+
+         break static friction        3.0 N*m  (joint_friction)
+         hold the stance load         1.3 N*m  (femur, at 0.28 m stance)
+         accelerate the leg in swing  the remainder
+
+       At 5.0 that leaves 0.7 N*m of authority, which is not enough to swing
+       a loaded leg, and the controller would saturate and the robot would
+       drag its feet. At 7.0 it leaves about 2.7 N*m, which is comfortable.
+
+       HARDWARE IMPLICATION, AND IT IS A REAL ONE
+       7.0 N*m is roughly 71 kgf*cm, so this specifies a servo ABOVE the
+       RDS5160 class named in the torque analysis above. That is a genuine
+       finding rather than a convenient number: once the gearbox friction
+       that keeps the legs from collapsing when unpowered is modelled
+       honestly, the same friction must be overcome on every swing, and the
+       servo has to be sized for the sum, not just for the holding load. -->
+  <xacro:property name="joint_effort"   value="7.0"/>
   <xacro:property name="joint_velocity" value="6.0"/>
+
+  <!-- ====================================================================
+       INITIAL JOINT ANGLES (the stance pose)
+
+       The robot must ENTER the world already standing. Spawning it with all
+       joints at zero puts the legs straight out sideways; gravity flattens
+       it, and the first position command then teleports 18 loaded joints in
+       a single physics step. gazebo_ros2_control realises position commands
+       with SetPosition(), so that is a literal teleport: feet appear inside
+       the ground plane and ODE removes the penetration with an impulse
+       large enough to throw the robot across the world.
+
+       No contact tuning fixes that, because the energy is injected by the
+       teleport, not by the contact model. The cure is to remove the
+       discontinuity entirely.
+
+       REVISED after seeing the robot stand: the previous stance (0.34 m out,
+       0.11 m down) put the leg at 86% of full extension with the tibia
+       horizontal, so the feet stuck out sideways and the body barely
+       cleared the ground. Legs that straight also have almost no vertical
+       compliance, which is bad for both load bearing and gait.
+
+       New stance: 0.28 m out, 0.18 m down.
+         D from femur joint = sqrt(0.13^2 + 0.18^2) = 0.222 m, i.e. 83% of
+         the femur+tibia reach of 0.267 m, so the knee is meaningfully bent.
+         Ground clearance under the chassis becomes 0.18 - 0.0575 = 0.12 m.
+
+       Angles, from the same closed-form IK as tools/verify_ik.py:
+         coxa   0.0000 rad
+         femur  1.6190 rad  ( 92.78 deg)   past vertical, hence the raised limit
+         tibia -1.1834 rad  (-67.80 deg)   tibia hangs downward
+  ==================================================================== -->
+  <xacro:property name="stance_coxa_angle"  value="0.0"/>
+  <xacro:property name="stance_femur_angle" value="0.2694"/>
+  <xacro:property name="stance_tibia_angle" value="1.1837"/>
 
   <!-- Joint damping and friction.
        damping  : viscous, torque proportional to joint velocity, N*m*s/rad
@@ -227,47 +308,155 @@
        marginally stable system for a discrete time solver: energy injected
        by a position controller has nowhere to go, and the joint oscillates
        or diverges. A small positive damping term is what makes an 18 DOF
-       chain numerically well behaved. Start here, tune in Phase 5. -->
-  <xacro:property name="joint_damping"  value="0.05"/>
-  <xacro:property name="joint_friction" value="0.01"/>
+       chain numerically well behaved.
+
+       ===================================================================
+       REVISED: friction 0.01 -> 3.0, damping 0.05 -> 0.5
+       ===================================================================
+       MEASURED SYMPTOM
+         lf_femur_joint   now +1.8010   cmd +1.6212   delta -0.1798
+       The femur sat 0.18 rad (10.3 deg) BELOW its commanded stance before
+       the gait node ever published. Every femur, every leg, body about 7 cm
+       low. The startup ramp then lifted the body back to design height
+       against six feet held by friction at mu = 2.0, and levered the robot
+       into the air.
+
+       WHY IT SAGGED
+       There is a window of one to two seconds between Gazebo starting to
+       step physics and the controllers finishing activation. Nothing writes
+       joint commands during it. With friction at 0.01 N*m against a femur
+       holding torque of 2.45 N*m, the joints are free by a factor of 245,
+       so the robot folds under its own weight almost instantly.
+
+       WHY 3.0 N*m IS THE HONEST VALUE, NOT A FUDGE
+       The old numbers modelled a frictionless ideal pivot. The robot does
+       not use ideal pivots; it uses geared servos. A servo of the RDS5160
+       class runs roughly 200:1 reduction, and gearbox friction is reflected
+       to the output multiplied by that ratio. The practical consequence is
+       familiar to anyone who has handled one: an UNPOWERED geared servo
+       does not flop about, it holds its position. It is very nearly
+       non-backdriveable.
+
+       So the correct static friction is "at least the load it must hold
+       without power". Peak femur torque is 2.45 N*m (see the torque
+       analysis above); 3.0 N*m clears it with margin and reproduces the
+       real behaviour: unpowered legs stay where they are put.
+
+       EFFECT ON CONTROL
+       None in position mode. gazebo_ros2_control realises position commands
+       with SetPosition(), which overrides joint state directly, so joint
+       friction cannot oppose it. This change therefore only acts during the
+       unpowered activation window, which is exactly where it is needed.
+
+       In EFFORT mode it does cost control authority: 3.0 N*m of the 5.0 N*m
+       joint_effort budget is spent breaking friction, leaving 2.0 N*m. That
+       is tight, and it is also true of the physical robot, which is the
+       point. If effort-mode tuning later needs more headroom, the answer is
+       a larger joint_effort backed by a servo that can actually deliver it,
+       not a lower friction figure that flatters the simulation.
+
+       Damping raised alongside it, 0.05 -> 0.5, for the same reason: a
+       geared drive is viscous as well as frictional, and the extra damping
+       costs about 0.5 N*m at 1 rad/s, which the gentle gait never reaches.
+
+       ===================================================================
+       REVISED AGAIN: friction 3.0 -> 1.5, from actual numbers this time
+       ===================================================================
+       3.0 was sized against "peak femur torque 2.45 N*m", which is the
+       WORST CASE with the leg fully extended. That is not the stance case,
+       and stance is the only case that matters here. Working it properly:
+
+         total mass   1.310 body + 6 x 0.337 leg          = 3.332 kg
+         weight                                            = 32.7 N
+         standing on SIX legs                              = 5.45 N per foot
+         femur lever arm, stance 0.28 minus coxa 0.15      = 0.13 m
+         femur torque, unpowered, all six legs down        = 0.71 N*m
+
+       0.71 N*m is what friction has to beat to stop the legs folding during
+       the controller activation window. 3.0 is over four times that.
+
+       WHY THE EXCESS IS HARMFUL IN EFFORT MODE
+       Coulomb friction is stiction: the joint does not move at all until
+       commanded torque exceeds it, then breaks free suddenly. With 3.0 N*m
+       of stiction against a 1.42 N*m stance load (tripod gait: three legs
+       carry everything, 10.9 N per foot), friction DOMINATES the dynamics.
+       The PID winds up against a stuck joint, breaks through, overshoots,
+       sticks again. Measured consequence: 6.9 deg of femur oscillation with
+       no command at all, body sagging 2.8 cm, 8.8 deg of tilt while
+       walking. No choice of gains fixes stick-slip; the friction itself has
+       to come down.
+
+       1.5 N*m keeps a 2x margin over the 0.71 N*m it must hold, and leaves
+       7.0 - 1.5 - 1.42 = 4.1 N*m of authority for accelerating a swinging
+       leg. That is a well-conditioned system rather than one where the
+       dominant term is a modelling constant.
+
+       In POSITION mode this change is invisible either way: SetPosition()
+       overrides joint state, so friction never opposes it.
+  -->
+  <xacro:property name="joint_damping"  value="0.5"/>
+  <xacro:property name="joint_friction" value="1.5"/>
 
   <!-- Foot contact friction. mu1 and mu2 are the ODE friction coefficients
        along the two tangential contact directions. Feet need HIGH friction
        or the tripod gait in Phase 8 will simply slip in place and go
        nowhere. -->
   <xacro:property name="foot_radius"   value="0.015"/>
-  <xacro:property name="foot_mu"       value="1.2"/>
+
+  <!-- Raised from 1.2. A rubber foot on a hard floor is realistically 1.5 to
+       2.0, so this is not an exaggeration, and generous friction removes one
+       variable while the gait is being validated. If the robot later refuses
+       to turn on the spot, THIS is the number to lower: excessive friction
+       makes yaw fight the stance feet. -->
+  <xacro:property name="foot_mu"       value="2.0"/>
 
   <!-- ====================================================================
-       MESH SWAP IN (Phase 2c, not active yet)
+       CAD MESHES
 
-       Set use_meshes to true only AFTER the primitive model is verified in
-       Gazebo and under ros2_control. Cosmetics last: a mesh cannot fix a
-       kinematic bug, but it can very effectively hide one.
+       POLICY: meshes are used for <visual> ONLY. <collision> and <inertial>
+       stay primitives, permanently. This is not a shortcut, it is the
+       normal division of labour:
 
-       mesh_scale converts the STL's millimetres to the URDF's metres. There
-       is no unit tag in an STL, so this factor IS the unit declaration.
+         visual    : what a human looks at. Detail is free, accuracy is
+                     cosmetic.
+         collision : evaluated pairwise every physics step across 25 links.
+                     A 9572 triangle body mesh here would cost roughly three
+                     orders of magnitude more than a box and buy nothing,
+                     because contact happens at the feet.
+         inertial  : needs a closed manifold. body test.stl is not
+                     watertight, so its mesh inertia is undefined. The box
+                     formula is not an approximation of a better number, it
+                     IS the better number here.
 
-       The offsets below re origin each mesh. The exporter laid every part
-       flat on the XY plane at a scattered layout position, so each mesh
-       needs a pure translation to bring its JOINT AXIS to the link origin.
-       These are first estimates from the audited bounding boxes:
-         x : move the near end of the part to x = 0
-         y : move the part's centreline to y = 0
-         z : move mid thickness to z = 0
-       They will be close but not exact, because the pivot is usually inset
-       from the end face. We refine them visually in RViz, one leg at a
-       time.
+       PREREQUISITE: run tools/reorigin_meshes.py first. It bakes the layout
+       sheet offset into the geometry and writes files with ROS safe names
+       (no spaces, which break package:// resolution). After that the
+       origins below are zero, apart from deliberate assembly offsets.
+
+       mesh_scale converts the STL's millimetres to the URDF's metres. An
+       STL carries no unit metadata whatsoever, so this factor IS the unit
+       declaration for the whole model.
   ==================================================================== -->
-  <xacro:property name="use_meshes" value="false"/>
+  <xacro:property name="use_meshes" value="true"/>
   <xacro:property name="mesh_scale" value="0.001 0.001 0.001"/>
+  <xacro:property name="mesh_dir"
+                  value="package://hexapod_description/meshes/visual"/>
 
-  <!-- from bbox_min and bbox_centre reported by mesh_audit.py, in metres -->
-  <xacro:property name="body_mesh_offset"       value="-3.39256 -1.64091 -0.05750"/>
-  <xacro:property name="coxa_mesh_offset"       value="-2.46719 -1.71011 -0.03500"/>
-  <xacro:property name="femur_bot_mesh_offset"  value="-3.09609 -1.90328 -0.01585"/>
-  <xacro:property name="femur_top_mesh_offset"  value="-3.12645 -1.82622 -0.00250"/>
-  <xacro:property name="tibia_mesh_offset"      value="-2.40358 -1.24579 -0.01000"/>
+  <!-- Assembly offset for the femur cover plate. femur_lower is 31.7 mm
+       thick and centred on z = 0, so it spans -15.85 to +15.85 mm. The
+       5 mm cover plate is anchored at its own z minimum, so placing it at
+       z = +0.01585 m seats it exactly on top. If your CAD stacks them
+       differently, this is the one number to change. -->
+  <xacro:property name="femur_upper_z" value="0.01585"/>
+
+  <!-- Visual nudges, applied on top of the re-origined meshes.
+       reorigin_meshes.py anchors to the BOUNDING BOX, but the true pivot is
+       usually inset from the end face by the servo horn or bearing boss.
+       Adjust these by eye in RViz once, then never again. Metres. -->
+  <xacro:property name="coxa_mesh_nudge"  value="0 0 0"/>
+  <xacro:property name="femur_mesh_nudge" value="0 0 0"/>
+  <xacro:property name="tibia_mesh_nudge" value="0 0 0"/>
+  <xacro:property name="body_mesh_nudge"  value="0 0 0"/>
 
   <!-- ====================================================================
        INERTIA MACROS

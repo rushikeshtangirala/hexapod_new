@@ -42,18 +42,112 @@
   <xacro:include filename="$(find hexapod_description)/urdf/common_properties.xacro"/>
   <xacro:include filename="$(find hexapod_description)/urdf/leg_macro.xacro"/>
 
+  <!-- Hardware abstraction. Gated so that RViz-only workflows and any future
+       hardware bringup do not drag in the Gazebo plugin. Pass
+       sim:=false to omit it. -->
+  <!-- position: joints are teleported by Gazebo. Stable only with a fixed
+       base. effort: joints are driven by torque through a PID loop, which
+       is what a real servo does and what a floating base requires. -->
+  <xacro:arg name="control_mode" default="effort"/>
+
+  <xacro:arg name="sim" default="true"/>
+  <xacro:if value="$(arg sim)">
+    <xacro:include filename="$(find hexapod_description)/urdf/hexapod.ros2_control.xacro"/>
+    <xacro:include filename="$(find hexapod_description)/urdf/hexapod.gazebo.xacro"/>
+  </xacro:if>
+
+  <!-- ====================================================================
+       OPTIONAL WORLD ANCHOR
+
+       fix_base:=true welds base_link to the world, so the body cannot
+       translate or rotate. The legs still move exactly as commanded.
+
+       WHY THIS EXISTS, AND WHY IT IS NOT CHEATING
+
+       gazebo_ros2_control realises a position command with Gazebo's
+       Joint::SetPosition(), which TELEPORTS the joint rather than applying
+       the torque that would produce that motion. For a bolted-down arm this
+       is harmless and convenient. For a FLOATING BASE robot standing on six
+       frictional contacts it is not: every control cycle repositions 18
+       joints by fiat, the contact solver sees a configuration it did not
+       produce, and the residual is resolved as a small impulse on the free
+       base. Two hundred times a second, that integrates into slow,
+       directionless drift and yaw. It is not a friction bug, and no value
+       of kp, kd, mu or solver iterations removes it, because the energy is
+       injected by the kinematic override itself.
+
+       Anchoring the base removes the free body, and with it the symptom.
+       What you can then demonstrate is genuine and complete:
+         - all 18 joints commanded and tracked
+         - the full ros2_control pipeline
+         - inverse kinematics placing feet at computed positions
+         - the tripod gait cycling with correct phasing and timing
+       What you cannot demonstrate is body translation, because the body is
+       held. State that plainly in your review; it is a known property of
+       position-interface control in Gazebo Classic, not a defect in the
+       gait, and the offline verifier proves the gait's non-slip and
+       stability properties independently.
+
+       The free-base fix is to drive the joints with effort commands through
+       a PID loop, so the physics engine computes the motion rather than
+       being told it. That is control_mode:=effort, implemented in
+       hexapod.ros2_control.xacro, and it is also what the real hardware
+       interface will do.
+
+       ANCHOR HEIGHT MATTERS.
+
+       The stance foot sits 0.11 m below base_link, and the foot sphere adds
+       another 0.015 m, so the contact point is 0.125 m below the body. Hold
+       the body at 0.125 m and the stance feet rest exactly on the ground.
+
+       Hold it higher and the legs cycle in mid air: pretty, but it proves
+       nothing about contact, because there is none. Held at the right
+       height you get the swing and stance phases making and breaking real
+       contact with the ground, which is the interesting behaviour and the
+       one worth showing in a review.
+
+       It is also a much better experiment. If the robot is stable with the
+       feet loaded and the gait running, contact and friction are fine, and
+       the free-base drift is conclusively the floating base plus kinematic
+       joint commands, not the contact model.
+  ==================================================================== -->
+  <xacro:arg name="fix_base" default="false"/>
+  <xacro:arg name="fix_base_height" default="0.125"/>
+  <xacro:if value="$(arg fix_base)">
+    <link name="world"/>
+    <joint name="world_to_base" type="fixed">
+      <parent link="world"/>
+      <child link="base_link"/>
+      <origin xyz="0 0 $(arg fix_base_height)" rpy="0 0 0"/>
+    </joint>
+  </xacro:if>
+
   <!-- ====================================================================
        BODY
   ==================================================================== -->
   <link name="base_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="${body_length} ${body_width} ${body_height}"/>
-      </geometry>
-      <material name="body_grey"/>
-    </visual>
+    <xacro:if value="${use_meshes}">
+      <visual>
+        <origin xyz="${body_mesh_nudge}" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="${mesh_dir}/body.stl" scale="${mesh_scale}"/>
+        </geometry>
+        <material name="body_grey"/>
+      </visual>
+    </xacro:if>
+    <xacro:unless value="${use_meshes}">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${body_length} ${body_width} ${body_height}"/>
+        </geometry>
+        <material name="body_grey"/>
+      </visual>
+    </xacro:unless>
 
+    <!-- Collision and inertia stay a box: the real frame is not watertight,
+         so a mesh derived inertia would be undefined, and box contact is
+         irrelevant anyway because the feet touch the ground, not the body. -->
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>

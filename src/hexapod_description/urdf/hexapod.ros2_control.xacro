@@ -1,0 +1,207 @@
+<?xml version="1.0"?>
+<!--
+  hexapod.ros2_control.xacro : the hardware abstraction layer
+  ==========================================================================
+  WHAT ros2_control IS, AND WHY IT EXISTS
+
+  Without it you would write a Gazebo plugin that subscribes to some topic
+  and sets joint forces. Then, for real hardware, you would write a
+  completely different node that talks to servos. The two would diverge, and
+  the gait you tuned in simulation would not run on the robot. That is the
+  problem ros2_control solves.
+
+  It defines ONE interface between "something that can move joints" and
+  "something that decides where joints should go":
+
+      CONTROLLERS  (trajectory, position, gait)
+            |  command interfaces  /  state interfaces
+            v
+      RESOURCE MANAGER
+            |
+      HARDWARE INTERFACE   (this is the swappable part)
+            |
+      +=====+======+
+      |            |
+    Gazebo      Real servos
+
+  Phase 9 replaces only the bottom box. The controllers, the URDF, the gait
+  code and the launch files are untouched. That is the entire payoff.
+
+  THE THREE PIECES OF VOCABULARY YOU NEED
+
+  command_interface : something a controller can WRITE. We expose "position"
+                      because servos are commanded by angle.
+  state_interface   : something a controller can READ. We expose position,
+                      velocity and effort.
+  controller_manager: the real time loop. Every cycle it reads all state
+                      interfaces, runs each active controller's update(), and
+                      writes all command interfaces. Nothing else may touch
+                      the hardware.
+
+  WHY POSITION AND NOT EFFORT
+  A hobby or serial bus servo has an internal position loop; you send it an
+  angle, not a torque. Modelling it as an effort source would mean tuning 18
+  PID loops in simulation whose gains have no counterpart on the real robot.
+  Position command is the honest abstraction here.
+
+  Note the consequence, stated plainly so it does not surprise you later:
+  gazebo_ros2_control's GazeboSystem drives a position command interface
+  KINEMATICALLY (it sets the joint angle directly rather than solving for the
+  torque that would achieve it). Joints will therefore not visibly sag under
+  load, and the <limit effort> value is not strictly enforced. That is
+  realistic for a good digital servo and unrealistic for a weak one. It is
+  also why the static torque analysis in common_properties.xacro matters:
+  the simulation will NOT warn you that your servos are too small.
+==========================================================================  -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ====================================================================
+       CONTROL MODE: position or effort
+       ====================================================================
+
+       THIS IS THE MOST IMPORTANT DECISION IN THE SIMULATION, and we now
+       have experimental evidence for it rather than opinion.
+
+       Two tests settled it:
+
+         fix_base:=true        robot anchored, gait running, feet loaded
+                               -> completely stable
+         controllers:=false    no controller writes to any joint
+                               -> robot collapses and then stays put
+
+       So contact, friction, inertia and the solver are all sound. The only
+       configuration that drifts is: floating base AND position commands.
+
+       WHY POSITION COMMANDS BREAK A FLOATING BASE
+       gazebo_ros2_control implements a position command with Gazebo's
+       Joint::SetPosition(), which TELEPORTS the joint. It does not compute
+       the torque required; it overrides the state. For a bolted-down arm
+       that is harmless. For a robot standing on six frictional contacts
+       with nothing holding its body, each control cycle hands the solver a
+       configuration it did not produce, and the inconsistency is resolved
+       as a small impulse on the free base. At 200 Hz that integrates into
+       slow drift and yaw. No value of kp, kd, mu, timestep or solver
+       iterations removes it, because the energy is injected by the
+       override, not by the contact model.
+
+       WHY EFFORT COMMANDS FIX IT
+       An effort command is a torque. The physics engine integrates it,
+       computes the resulting joint motion, and produces reaction forces
+       that are consistent with the contacts by construction. Nothing is
+       overridden, so no spurious momentum appears. The joint reaches its
+       target because a PID loop drives the error to zero, exactly as a real
+       servo does.
+
+       AND IT IS MORE HONEST
+       A real servo is a torque source wrapped in its own position loop. It
+       has finite torque, it droops under load, and it takes time to
+       converge. Effort control reproduces all three. Position control
+       reproduces none: it hits the target instantly regardless of load, so
+       a gait tuned against it can demand things the hardware cannot do and
+       you find out on the bench. This is the same argument as the servo
+       torque calculation in common_properties.xacro.
+
+       Set via  control_mode:=effort  (default) or  control_mode:=position
+       to fall back to the known-working fixed-base demo.
+  ==================================================================== -->
+  <xacro:property name="use_effort"
+                  value="${'$(arg control_mode)' == 'effort'}"/>
+
+  <xacro:macro name="leg_joint_ros2_control"
+               params="joint_name lower upper initial">
+    <joint name="${joint_name}">
+
+      <xacro:if value="${use_effort}">
+        <!-- Torque command, bounded by the servo's real capability. The
+             PID that converts a position target into this torque lives in
+             the controller, not here, which is correct: the hardware
+             declares what it can accept, the controller decides what to
+             send. -->
+        <command_interface name="effort">
+          <param name="min">${-joint_effort}</param>
+          <param name="max">${joint_effort}</param>
+        </command_interface>
+      </xacro:if>
+
+      <xacro:unless value="${use_effort}">
+        <command_interface name="position">
+          <param name="min">${lower}</param>
+          <param name="max">${upper}</param>
+        </command_interface>
+      </xacro:unless>
+
+      <!-- initial_value places the joint at its stance angle during hardware
+           initialisation, before the first control cycle, so the robot
+           exists standing and no large correction is ever needed. Honoured
+           identically by a real hardware interface in Phase 9. -->
+      <state_interface name="position">
+        <param name="initial_value">${initial}</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- One macro emits the three joint blocks for a leg, so the 18 joint
+       list cannot drift out of sync with leg_macro.xacro. -->
+  <xacro:macro name="leg_ros2_control" params="prefix">
+    <xacro:leg_joint_ros2_control joint_name="${prefix}_coxa_joint"
+                                  lower="${coxa_lower}" upper="${coxa_upper}"
+                                  initial="${stance_coxa_angle}"/>
+    <xacro:leg_joint_ros2_control joint_name="${prefix}_femur_joint"
+                                  lower="${femur_lower}" upper="${femur_upper}"
+                                  initial="${stance_femur_angle}"/>
+    <xacro:leg_joint_ros2_control joint_name="${prefix}_tibia_joint"
+                                  lower="${tibia_lower}" upper="${tibia_upper}"
+                                  initial="${stance_tibia_angle}"/>
+  </xacro:macro>
+
+  <!-- ====================================================================
+       THE ros2_control BLOCK
+
+       type="system" means one hardware component owns several joints, as
+       opposed to "actuator" (one joint) or "sensor" (read only). All 18
+       joints belong to one system because in simulation they share one
+       physics engine, and on hardware they will share one serial bus.
+  ==================================================================== -->
+  <ros2_control name="HexapodSystem" type="system">
+    <hardware>
+      <!-- Phase 9 swaps THIS LINE and nothing else:
+             hexapod_hardware/HexapodServoBus
+           The 18 joint blocks below stay byte for byte identical. -->
+      <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+    </hardware>
+
+    <xacro:leg_ros2_control prefix="lf"/>
+    <xacro:leg_ros2_control prefix="lm"/>
+    <xacro:leg_ros2_control prefix="lr"/>
+    <xacro:leg_ros2_control prefix="rf"/>
+    <xacro:leg_ros2_control prefix="rm"/>
+    <xacro:leg_ros2_control prefix="rr"/>
+  </ros2_control>
+
+  <!-- ====================================================================
+       THE GAZEBO PLUGIN
+
+       This is what actually starts a controller_manager INSIDE the Gazebo
+       process. That co-location is deliberate: the control loop must run in
+       lockstep with the physics step, not asynchronously over DDS, or the
+       controller would be reading stale state.
+
+       Because of that, you do NOT run `ros2 run controller_manager
+       ros2_control_node` in simulation. Doing so gives you two competing
+       controller managers and a very confusing afternoon.
+
+       <parameters> points at the controller YAML. The path is resolved by
+       xacro at expansion time, so it must be a real filesystem path in the
+       install space, which $(find ...) provides.
+  ==================================================================== -->
+  <gazebo>
+    <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
+      <parameters>$(find hexapod_control)/config/controllers.yaml</parameters>
+      <robot_param>robot_description</robot_param>
+      <robot_param_node>robot_state_publisher</robot_param_node>
+    </plugin>
+  </gazebo>
+
+</robot>

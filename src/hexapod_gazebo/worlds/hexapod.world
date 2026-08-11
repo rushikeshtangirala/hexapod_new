@@ -1,0 +1,154 @@
+<?xml version="1.0" ?>
+<!--
+  hexapod.world : Gazebo Classic world tuned for an 18 joint articulated body.
+  ==========================================================================
+  WHY A CUSTOM WORLD INSTEAD OF empty.world
+
+  The default Gazebo physics settings are tuned for a handful of bodies with
+  few contacts, typically a wheeled robot. A hexapod is a different problem:
+  25 links, 18 actuated joints, and up to 6 simultaneous ground contacts that
+  make and break every gait cycle. Left on defaults, the solver does not
+  converge each step, and the symptom is a robot that jitters, sinks, drifts
+  sideways while "standing still", or launches itself into orbit.
+
+  Every number below is a deliberate answer to one of those failure modes.
+==========================================================================  -->
+<sdf version="1.6">
+  <world name="hexapod_world">
+
+    <include><uri>model://sun</uri></include>
+
+    <!-- Ground plane. Gazebo's stock model already has very high friction
+         (mu = 100), which is what we want: the feet should be the compliant,
+         slipping element, not the floor. Modelling both as slippery makes
+         gait debugging impossible because you cannot tell which surface
+         failed. -->
+    <include><uri>model://ground_plane</uri></include>
+
+    <physics name="default_physics" default="true" type="ode">
+
+      <!-- max_step_size: the integration timestep, in seconds.
+           1 ms is the standard choice for legged robots. Larger steps make
+           contact forces impulsive and unstable; smaller steps cost real
+           time you do not have. If the robot still jitters after tuning
+           everything else, halve this to 0.0005 before touching anything
+           else. -->
+      <!-- 0.001 s = 1000 Hz. Restored from 0.002 after measuring the
+           machine: 20 cores and 6 GB free, so CPU was never the constraint.
+           The earlier reduction was a guess at fixing service timeouts whose
+           actual cause was DDS transport, not load.
+
+           THE TIMESTEP AND THE CONTACT STIFFNESS ARE ONE DECISION, NOT TWO.
+           A contact behaves as a spring of stiffness kp against the mass it
+           supports. Its natural frequency is
+
+               omega = sqrt(kp / m)
+
+           and an explicit integrator needs roughly 10 samples per period to
+           stay stable. With kp = 1e6 and about 0.57 kg per foot:
+
+               omega = sqrt(1e6 / 0.57) = 1325 rad/s = 211 Hz
+
+           At 500 Hz that is 2.4 samples per oscillation, so the contacts
+           ring. Six ringing friction cones produce a small, effectively
+           random net force, and a robot standing perfectly still slowly
+           rotates and slides across the world. It looks like a friction bug.
+           It is an aliasing bug.
+
+           Fixed at both ends: 1000 Hz here, and kp lowered to 5e4 in
+           leg_macro.xacro. -->
+      <max_step_size>0.001</max_step_size>
+
+      <!-- real_time_update_rate x max_step_size = target real time factor.
+           1000 x 0.001 = 1.0, i.e. simulate at wall clock speed. Under WSL2
+           software rendering you will likely see 0.3 to 0.6. That is fine.
+           It does NOT affect physics correctness, only how long you wait,
+           because every node uses /clock rather than wall time. -->
+      <real_time_update_rate>1000</real_time_update_rate>
+      <real_time_factor>1.0</real_time_factor>
+
+      <ode>
+        <solver>
+          <!-- "quick" is ODE's iterative projected Gauss-Seidel solver.
+               "world" is the direct solver: exact, but O(n^3) and far too
+               slow for 25 bodies. Every legged robot uses quick. -->
+          <type>quick</type>
+
+          <!-- iters: solver iterations per step. THIS IS THE SINGLE MOST
+               IMPORTANT NUMBER IN THIS FILE.
+
+               Gauss-Seidel converges by sweeping the constraint list
+               repeatedly. A long serial chain (body -> coxa -> femur ->
+               tibia -> foot) propagates force one joint per iteration, so a
+               4 link chain needs several sweeps just to transmit ground
+               reaction up to the body. With 6 such chains sharing one body,
+               the default 20 iterations leaves large residual constraint
+               error, which appears as springy, sagging legs.
+
+               100, restored. Residual constraint error from too few
+               iterations is another source of the slow drift: a chain that
+               has not converged transmits a small unbalanced force to the
+               body every step, and six of them do not cancel.
+
+               THIS IS THE FIRST DIAL TO TURN, in either direction:
+                 robot sags, drifts, or legs feel springy -> RAISE to 150
+                 real time factor below 0.1              -> LOWER to 50
+               Sagging is solver error, not a control problem. Do not chase
+               it with controller gains. -->
+          <iters>100</iters>
+
+          <!-- sor: successive over-relaxation factor. Values above 1
+               accelerate convergence but can overshoot. 1.3 is the standard
+               compromise and rarely needs changing. -->
+          <sor>1.3</sor>
+        </solver>
+
+        <constraints>
+          <!-- cfm: Constraint Force Mixing. Adds compliance to every
+               constraint. 0 means perfectly rigid joints. A tiny non zero
+               value (1e-5) can rescue a stiff system that will not converge,
+               at the cost of slightly rubbery joints. Start rigid. -->
+          <cfm>0.0</cfm>
+
+          <!-- erp: Error Reduction Parameter. The fraction of accumulated
+               joint error corrected each step. 0.2 means 20% per step, so
+               errors decay over roughly 5 steps. Raising it towards 1.0
+               makes joints stiffer but can inject energy and destabilise
+               the solver. 0.2 is the right default. -->
+          <erp>0.2</erp>
+
+          <!-- Caps the velocity the solver may use to push interpenetrating
+               bodies apart. Without a cap, a foot that spawns slightly
+               inside the floor gets ejected at enormous speed. This is the
+               classic "robot explodes the instant it spawns" cause. -->
+          <contact_max_correcting_vel>100.0</contact_max_correcting_vel>
+
+          <!-- Allowed penetration depth before corrective force is applied,
+               in metres. A small non zero layer prevents contacts from
+               chattering on and off between steps, which is what produces
+               audible buzzing feet and slow sideways drift. -->
+          <contact_surface_layer>0.001</contact_surface_layer>
+        </constraints>
+      </ode>
+
+    </physics>
+
+    <!-- gravity belongs to the WORLD, not to <physics>.
+         Placing it inside <physics> produces
+             [Err] [PhysicsEngine.cc:255] SetParam(gravity) bad any_cast
+             [Wrn] [PresetManager.cc:82] Couldn't set parameter [gravity]
+         and Gazebo then silently falls back to its default, which happens
+         to also be -9.81, so the simulation looks fine and the error is
+         easy to dismiss. It is still wrong, and it would bite immediately
+         if you ever wanted reduced gravity for testing. -->
+    <gravity>0 0 -9.81</gravity>
+
+    <!-- Camera placed to look at a robot spawned near the origin. -->
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>1.2 -1.2 0.9 0 0.35 2.35</pose>
+      </camera>
+    </gui>
+
+  </world>
+</sdf>
