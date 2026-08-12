@@ -500,6 +500,29 @@
   <xacro:property name="sim_profile" value="$(arg sim_profile)"/>
   <xacro:property name="repo_mode"   value="${sim_profile == 'repo'}"/>
 
+  <!-- ====================================================================
+       sim_profile:=demo   KINEMATIC DEMONSTRATION MODE
+       ====================================================================
+       Masses, inertias and joint limits are the MEASURED ones, unchanged.
+       The only difference is that gravity is disabled per link.
+
+       WHY. In demo mode hexapod_gait/body_driver.py sets the body pose
+       directly from the gait, because the contact solver is the one part of
+       this stack nobody has made behave with a floating base. If gravity
+       stays on, every imposed pose is a teleport that the solver then tries
+       to correct, and the robot jitters or is thrown.
+
+       The legs still run the real gait and the real IK. Only the step where
+       Gazebo rediscovers the body displacement by integrating friction cones
+       is skipped, and that displacement is already guaranteed by the gait's
+       non-slip property, which verify_gait.py asserts at every sampled phase.
+
+       PRESENT THIS AS KINEMATIC SIMULATION. Do not quote a torque, a contact
+       force, a slip figure or a stability margin from it. Those come from
+       sim_profile:=physical, and the results there are reported separately.
+  ==================================================================== -->
+  <xacro:property name="demo_mode" value="${sim_profile == 'demo'}"/>
+
   <xacro:if value="${repo_mode}">
     <!-- Masses. hexapod_ros uses 0.00001 kg for every link including the
          body. Kept non-zero for the same reason their model does: a zero

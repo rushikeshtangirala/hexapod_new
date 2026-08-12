@@ -162,6 +162,7 @@
   </link>
 
   <gazebo reference="base_link">
+    <xacro:if value="${demo_mode}"><gravity>0</gravity></xacro:if>
     <material>Gazebo/DarkGrey</material>
   </gazebo>
 

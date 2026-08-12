@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "gait_node = hexapod_gait.gait_node:main",
+            "body_driver = hexapod_gait.body_driver:main",
         ],
     },
 )

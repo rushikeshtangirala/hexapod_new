@@ -305,6 +305,7 @@
                        starting point for a sub 4 kg robot.
     ================================================================ -->
     <gazebo reference="${prefix}_foot_link">
+      <xacro:if value="${demo_mode}"><gravity>0</gravity></xacro:if>
       <mu1>${foot_mu}</mu1>
       <mu2>${foot_mu}</mu2>
 
@@ -411,12 +412,15 @@
     </xacro:if>
 
     <gazebo reference="${prefix}_coxa_link">
+      <xacro:if value="${demo_mode}"><gravity>0</gravity></xacro:if>
       <material>Gazebo/Orange</material>
     </gazebo>
     <gazebo reference="${prefix}_femur_link">
+      <xacro:if value="${demo_mode}"><gravity>0</gravity></xacro:if>
       <material>Gazebo/Blue</material>
     </gazebo>
     <gazebo reference="${prefix}_tibia_link">
+      <xacro:if value="${demo_mode}"><gravity>0</gravity></xacro:if>
       <material>Gazebo/Green</material>
     </gazebo>
 
