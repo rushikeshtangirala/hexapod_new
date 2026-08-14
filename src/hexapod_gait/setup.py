@@ -25,6 +25,7 @@ setup(
         "console_scripts": [
             "gait_node = hexapod_gait.gait_node:main",
             "body_driver = hexapod_gait.body_driver:main",
+            "demo_sequence = hexapod_gait.demo_sequence:main",
         ],
     },
 )

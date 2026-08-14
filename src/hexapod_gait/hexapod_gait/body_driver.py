@@ -138,6 +138,18 @@ class BodyDriver(Node):
 
         self.create_subscription(Twist, "/cmd_vel", self.on_cmd_vel, 10)
 
+        # ---- TF: world -> base_link --------------------------------------
+        # Without this, RViz cannot show the robot travelling. Its fixed
+        # frame would have to be base_link, which IS the robot, so a correct
+        # walk looks like the whole world sliding past a stationary machine.
+        # robot_state_publisher only supplies base_link downwards; nothing
+        # else in the demo says where base_link is in the world.
+        #
+        # Set RViz's Fixed Frame to "world" and the robot walks across the
+        # grid, which is the view worth putting in the report.
+        from tf2_ros import TransformBroadcaster
+        self.tf = TransformBroadcaster(self)
+
         self.last = self.get_clock().now()
         self.create_timer(1.0 / self.rate, self.on_timer)
         self._pending = None
@@ -166,18 +178,25 @@ class BodyDriver(Node):
         self.vy += a * (self.vy_cmd - self.vy)
         self.wz += a * (self.wz_cmd - self.wz)
 
-        # Same deadband the gait uses, so the body is stationary exactly when
-        # the legs are.
-        speed = math.hypot(self.vx, self.vy) + abs(self.wz) * self.stance_radius
-        if speed >= self.deadband:
-            # Body-frame velocity into the world frame. Standard planar
-            # integration; yaw first so the step uses the mid-step heading.
-            c, s = math.cos(self.yaw), math.sin(self.yaw)
-            self.x += (self.vx * c - self.vy * s) * dt
-            self.y += (self.vx * s + self.vy * c) * dt
-            self.yaw += self.wz * dt
+        # INTEGRATE UNCONDITIONALLY. There used to be a deadband gate here,
+        # mirroring GaitGenerator.advance(), and it was subtly wrong.
+        #
+        # When the operator releases the key, the gait does NOT stop dead: it
+        # enters its settle sequence and keeps stepping for up to two more
+        # cycles so every foot lands, using the decaying filtered velocity to
+        # shrink each stride. If the body stopped at the deadband while the
+        # legs were still taking those last few millimetre strides, the feet
+        # would slide by exactly that residue on every stop.
+        #
+        # The filter decays toward zero anyway, so integrating it always is
+        # both simpler and exactly consistent with what the legs are doing.
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
+        self.x += (self.vx * c - self.vy * s) * dt
+        self.y += (self.vx * s + self.vy * c) * dt
+        self.yaw += self.wz * dt
 
         self.publish_pose()
+        self.publish_tf()
 
     # ----------------------------------------------------------------------
     def publish_pose(self) -> None:
@@ -198,6 +217,21 @@ class BodyDriver(Node):
         req.state.pose.orientation.w = math.cos(self.yaw * 0.5)
         req.state.reference_frame = "world"
         self._pending = self.cli.call_async(req)
+
+    # ----------------------------------------------------------------------
+    def publish_tf(self) -> None:
+        from geometry_msgs.msg import TransformStamped
+
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = "world"
+        t.child_frame_id = "base_link"
+        t.transform.translation.x = self.x
+        t.transform.translation.y = self.y
+        t.transform.translation.z = self.z
+        t.transform.rotation.z = math.sin(self.yaw * 0.5)
+        t.transform.rotation.w = math.cos(self.yaw * 0.5)
+        self.tf.sendTransform(t)
 
 
 def main() -> None:

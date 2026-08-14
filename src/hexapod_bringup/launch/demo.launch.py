@@ -72,8 +72,41 @@ def generate_launch_description() -> LaunchDescription:
         # demonstration, not a speed record.
         DeclareLaunchArgument("cycle_time", default_value="2.0"),
         DeclareLaunchArgument("step_height", default_value="0.045"),
+
+        # =================================================================
+        # THE VELOCITY ENVELOPE AND max_stride ARE ONE DECISION.
+        #
+        # Slip in the first demo run was NOT a physics artefact. It was a
+        # stride clamp:
+        #
+        #   forward at 0.08 m/s      needs  80.0 mm stride   under the limit
+        #   turning at 0.40 rad/s    needs 158.8 mm stride   CLAMPED at 100
+        #   both together            needs 232.0 mm stride   CLAMPED at 100
+        #
+        # stride_vector() clamps magnitude while preserving direction, so on
+        # a turn the legs took a 100 mm stride while the body driver turned
+        # the body by the full 0.40 rad/s. The legs were under-striding by
+        # more than a third, and the feet made up the difference by sliding.
+        # The faster you turned, the worse it looked.
+        #
+        # The furthest foot sits 0.3971 m from the body centre, so the
+        # binding constraint is
+        #
+        #     (v + w * 0.3971) * stance_time  <=  max_stride
+        #
+        # With cycle_time 2.0 s, stance_time is 1.0 s, and 0.08 + 0.30*0.3971
+        # = 0.199 m. max_stride 0.20 therefore never clamps anywhere inside
+        # this envelope, and check_reachable confirms every phase of every
+        # leg stays inside its joint limits at the corners:
+        #
+        #     max_stride 0.20, v 0.08, w 0.30  ->  reachable, in limits
+        #
+        # If you widen the envelope, re-run that check. Do not raise the
+        # speeds without raising max_stride, or the slip returns.
+        # =================================================================
         DeclareLaunchArgument("max_linear_speed", default_value="0.08"),
-        DeclareLaunchArgument("max_angular_speed", default_value="0.40"),
+        DeclareLaunchArgument("max_angular_speed", default_value="0.30"),
+        DeclareLaunchArgument("max_stride", default_value="0.20"),
 
         # ------------------------------------------------------------------
         # 1. Simulation.
@@ -117,6 +150,7 @@ def generate_launch_description() -> LaunchDescription:
                     "control_mode": "position",
                     "cycle_time": LaunchConfiguration("cycle_time"),
                     "step_height": LaunchConfiguration("step_height"),
+                    "max_stride": LaunchConfiguration("max_stride"),
                     "max_linear_speed": LaunchConfiguration("max_linear_speed"),
                     "max_angular_speed": LaunchConfiguration("max_angular_speed"),
                     "startup_ramp": "3.0",

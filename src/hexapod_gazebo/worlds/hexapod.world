@@ -185,6 +185,69 @@
          that is negligible. Do not raise update_rate; 50 Hz is already twice
          what any measurement here needs.
     ==================================================================== -->
+    <!-- ====================================================================
+         DISTANCE MARKERS.  Visual only, no collision, static.
+
+         WHY A DEMO NEEDS THESE
+         On a featureless grey ground plane a walking robot is genuinely hard
+         to see moving, especially on a screen recording where the camera does
+         not follow it. Viewers read the leg motion and cannot tell whether the
+         body is travelling, which is the exact ambiguity this whole project
+         has been fighting. Posts every half metre make translation obvious at
+         a glance and give the video a sense of scale.
+
+         NO COLLISION ELEMENT, deliberately. They are scenery. A collision
+         shape would let the robot clip one mid-demonstration and be flung
+         across the world, which is precisely the failure the kinematic demo
+         exists to make impossible. Placed 0.9 m either side of the walking
+         line as well, so they are out of the way regardless.
+    ==================================================================== -->
+    <model name="distance_markers">
+      <static>true</static>
+      <link name="markers">
+        <visual name="m_0_l"><pose>0.0 0.9 0.15 0 0 0</pose>
+          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
+          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
+        </visual>
+        <visual name="m_0_r"><pose>0.0 -0.9 0.15 0 0 0</pose>
+          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
+          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
+        </visual>
+        <visual name="m_1_l"><pose>0.5 0.9 0.1 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.2</size></box></geometry>
+          <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material>
+        </visual>
+        <visual name="m_1_r"><pose>0.5 -0.9 0.1 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.2</size></box></geometry>
+          <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material>
+        </visual>
+        <visual name="m_2_l"><pose>1.0 0.9 0.15 0 0 0</pose>
+          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
+          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
+        </visual>
+        <visual name="m_2_r"><pose>1.0 -0.9 0.15 0 0 0</pose>
+          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
+          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
+        </visual>
+        <visual name="m_3_l"><pose>1.5 0.9 0.1 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.2</size></box></geometry>
+          <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material>
+        </visual>
+        <visual name="m_3_r"><pose>1.5 -0.9 0.1 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.2</size></box></geometry>
+          <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material>
+        </visual>
+        <visual name="m_4_l"><pose>2.0 0.9 0.15 0 0 0</pose>
+          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
+          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
+        </visual>
+        <visual name="m_4_r"><pose>2.0 -0.9 0.15 0 0 0</pose>
+          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
+          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
     <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
       <ros>
         <namespace>/</namespace>
