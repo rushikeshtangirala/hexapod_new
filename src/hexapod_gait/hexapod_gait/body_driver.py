@@ -88,7 +88,23 @@ class BodyDriver(Node):
         gp = GaitParams()
 
         self.declare_parameter("model_name", "hexapod")
-        self.declare_parameter("rate", 50.0)
+        # 100 Hz, raised from 50.
+        #
+        # Each set_entity_state is a discrete relocation of the body, so the
+        # body advances in `rate` steps per second while the legs are
+        # integrated by the physics engine at 1000 Hz. At 50 Hz that
+        # mismatch is visible as a faint stutter: the legs move smoothly and
+        # the body moves in 20 ms increments. Doubling the rate halves the
+        # step size and the residual is below what the eye resolves at normal
+        # playback speed.
+        #
+        # Cost is one extra service call per 10 ms, and publish_pose() will
+        # not queue a second request while one is outstanding, so if Gazebo
+        # cannot keep up this degrades to the old behaviour rather than
+        # building a backlog. Raising it further has diminishing returns; the
+        # honest fix would be continuous pose control, which is not worth
+        # building for a demonstration.
+        self.declare_parameter("rate", 100.0)
         # Ride height of base_link above the ground. Stance depth plus the
         # foot sphere radius: 0.180 + 0.015. If the feet visibly float or
         # sink, this is the number to adjust, and it is the ONLY number here

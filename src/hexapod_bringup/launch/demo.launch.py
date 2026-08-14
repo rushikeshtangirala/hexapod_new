@@ -174,7 +174,7 @@ def generate_launch_description() -> LaunchDescription:
                 parameters=[{
                     "use_sim_time": True,
                     "model_name": "hexapod",
-                    "rate": 50.0,
+                    "rate": 100.0,
                     "ride_height": 0.195,
                     "max_linear_speed": LaunchConfiguration("max_linear_speed"),
                     "max_angular_speed": LaunchConfiguration("max_angular_speed"),
