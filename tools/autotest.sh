@@ -25,6 +25,7 @@
 # USAGE
 #   bash ~/hexapod_ws/tools/autotest.sh            # all configurations
 #   bash ~/hexapod_ws/tools/autotest.sh B          # just one, by letter
+#   bash ~/hexapod_ws/tools/autotest.sh D E        # the pair that isolates the pin
 #   bash ~/hexapod_ws/tools/autotest.sh B C
 #
 # About 2 minutes per configuration. Safe to re-run. Safe to interrupt.
@@ -39,41 +40,37 @@ REPORT="/tmp/autotest_report_$(date +%Y%m%d_%H%M%S).txt"
 # exactly one thing to paste and no chance of a partial copy.
 exec > >(tee "${REPORT}") 2>&1
 
-# =============================================================================
-# CONFIGURATIONS
+# The four cells of a 2x2. Two factors, two levels each:
 #
-#   name | control_mode | fix_base | sim_profile | why it is in the list
-# -----------------------------------------------------------------------------
-#   B    | position     | false    | physical    | Never actually tried with a
-#          free base and a CORRECT gait. The earlier verdict against it
-#          ("body travels 2.9 mm in 20 s") was measured while the stance swept
-#          every foot the wrong way, dragging them over the ground at twice
-#          body speed. That measurement is void. It may simply work now.
+#                     measured model      light (hexapod_ros) model
+#   position              B                        E
+#   effort                D                        C
 #
-#   C    | effort       | false    | repo        | KevinOchs/hexapod_ros
-#          assumptions: 1e-5 kg links, identity inertias, p=100. Non-physical
-#          and stable because of it.
+# B, C and D were run on 2026-08-12. B walks the legs but not the body, C
+# walks, D leaves the body pinned at the origin. D therefore differs from B
+# only in control_mode and from C only in sim_profile, so either factor could
+# be responsible and neither result isolates it.
 #
-#   D    | effort       | false    | physical    | Our measured model on the
-#          interface that is physically correct. The one we actually want.
-#          Expected to need gain work; this tells us how much.
+# E is the missing cell and it is what makes the table an experiment rather
+# than three anecdotes:
 #
-# A (fix_base:=true) is deliberately absent. It welds the body to the world,
-# so it CANNOT translate, and "the legs move but the robot does not" is the
-# guaranteed result rather than a finding. Use it by hand to inspect leg
-# motion, never as a walking test.
-# =============================================================================
-config_mode()    { case "$1" in B) echo position ;; C|D) echo effort ;; esac; }
-config_profile() { case "$1" in B|D) echo physical ;; C) echo repo ;; esac; }
+#   E behaves like B  ->  the pin follows the EFFORT interface
+#   E behaves like D  ->  the pin follows the MEASURED model
+#   E does neither    ->  the two factors interact, which is itself the answer
+#
+# One run, and we stop guessing about it.
+config_mode()    { case "$1" in B|E) echo position ;; C|D) echo effort ;; esac; }
+config_profile() { case "$1" in B|D) echo physical ;; C|E) echo repo ;; esac; }
 config_desc() {
   case "$1" in
     B) echo "position interface, measured model" ;;
-    C) echo "effort interface, hexapod_ros model (non-physical)" ;;
+    C) echo "effort interface, light model" ;;
     D) echo "effort interface, measured model" ;;
+    E) echo "position interface, light model" ;;
   esac
 }
 
-CONFIGS="${*:-B C D}"
+CONFIGS="${*:-B C D E}"
 
 SPEED=0.03
 BASELINE=8

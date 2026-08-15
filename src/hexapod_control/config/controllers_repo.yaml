@@ -185,24 +185,24 @@ leg_trajectory_controller:
     # joints are stiff but the torque request remains physically plausible
     # for the RDS5160-class servo the torque analysis called for.
     gains:
-      lf_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
-      lf_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
-      lf_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
-      lm_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
-      lm_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
-      lm_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
-      lr_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
-      lr_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
-      lr_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
-      rf_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
-      rf_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
-      rf_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
-      rm_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
-      rm_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
-      rm_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
-      rr_coxa_joint: {p: 100.0, i: 0.0, d: 0.0}
-      rr_femur_joint: {p: 100.0, i: 0.0, d: 0.0}
-      rr_tibia_joint: {p: 100.0, i: 0.0, d: 0.0}
+      lf_coxa_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      lf_femur_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      lf_tibia_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      lm_coxa_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      lm_femur_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      lm_tibia_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      lr_coxa_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      lr_femur_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      lr_tibia_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      rf_coxa_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      rf_femur_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      rf_tibia_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      rm_coxa_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      rm_femur_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      rm_tibia_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      rr_coxa_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      rr_femur_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
+      rr_tibia_joint: {p: 100.0, i: 0.0, d: 0.0, ff_velocity_scale: 1.0}
 
 
 # =============================================================================
