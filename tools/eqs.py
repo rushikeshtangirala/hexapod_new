@@ -26,7 +26,7 @@ panel("eq_fk.png", [
 
 panel("eq_ik.png", [
  ("Step 1    Coxa. The only joint that moves the foot sideways", "n"),
- (r"$\theta_1 = \mathrm{atan2}(y,\ x)$", "e"),
+ (r"$\theta_1 = \arctan\left(\frac{y}{x}\right)$", "e"),
  ("Step 2    Reduce to a two link problem in the leg plane", "n"),
  (r"$r' = \sqrt{x^2+y^2} - L_1 \qquad D = \sqrt{r'^2 + z^2}$", "e"),
  ("Step 3    Tibia, by the law of cosines", "n"),

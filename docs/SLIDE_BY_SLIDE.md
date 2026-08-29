@@ -125,11 +125,14 @@ creating a left-handed frame that would break standard rotation formulas.
 
 **Step 1 — coxa.** *"The coxa is the only joint that can move the foot
 sideways, so its angle comes straight from the horizontal direction to the
-target."* `θ₁ = atan2(y, x)`.
+target."* `θ₁ = arctan(y/x)`.
 
-> Why `atan2` and not `arctan(y/x)`: it uses the signs of **both** arguments,
-> so it gives the correct quadrant over a full ±180°, and it doesn't divide by
-> zero.
+> **If asked why β on step 4 is written `atan2` while θ₁ is written `arctan`:**
+> they are the same idea. `atan2` is the two-argument form, which uses the
+> signs of both arguments to resolve the quadrant over a full ±180° and does
+> not divide by zero. `arctan(y/x)` is the standard way to write it; in code
+> we evaluate it as `atan2` so the sign handling is correct for legs on the
+> right-hand side of the robot, where `x` can be negative.
 
 **Step 2 — reduce to two links.** *"Move the origin out to the femur joint,
 which sits L₁ along the plane. Now `r′` is how far out the target is from
