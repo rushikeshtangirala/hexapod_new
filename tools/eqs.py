@@ -32,7 +32,7 @@ panel("eq_ik.png", [
  ("Step 3    Tibia, by the law of cosines", "n"),
  (r"$\cos\theta_3 = \frac{D^2 - L_2^2 - L_3^2}{2 L_2 L_3}$", "e"),
  ("Step 4    Femur, as two angles added", "n"),
- (r"$\beta = \mathrm{atan2}(-z,\ r') \qquad \cos\psi = \frac{L_2^2 + D^2 - L_3^2}{2 L_2 D}$", "e"),
+ (r"$\beta = \arctan\left(\frac{-z}{r'}\right) \qquad \cos\psi = \frac{L_2^2 + D^2 - L_3^2}{2 L_2 D}$", "e"),
  (r"$\theta_2 = \beta - \psi$", "e"),
 ], w=7.4, lh=0.098)
 

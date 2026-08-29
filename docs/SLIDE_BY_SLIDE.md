@@ -127,12 +127,12 @@ creating a left-handed frame that would break standard rotation formulas.
 sideways, so its angle comes straight from the horizontal direction to the
 target."* `θ₁ = arctan(y/x)`.
 
-> **If asked why β on step 4 is written `atan2` while θ₁ is written `arctan`:**
-> they are the same idea. `atan2` is the two-argument form, which uses the
+> **If asked about `arctan` versus `atan2`:** they express the same angle.
+> `arctan(y/x)` is the standard mathematical form and is what we show.
+> In code we evaluate it as the two-argument `atan2(y, x)`, which uses the
 > signs of both arguments to resolve the quadrant over a full ±180° and does
-> not divide by zero. `arctan(y/x)` is the standard way to write it; in code
-> we evaluate it as `atan2` so the sign handling is correct for legs on the
-> right-hand side of the robot, where `x` can be negative.
+> not divide by zero. That matters for the legs on the right-hand side of the
+> robot, where `x` goes negative.
 
 **Step 2 — reduce to two links.** *"Move the origin out to the femur joint,
 which sits L₁ along the plane. Now `r′` is how far out the target is from
@@ -145,8 +145,8 @@ cosines gives the tibia angle directly."*
 > The interior angle at the tibia joint is `π − θ₃`, because `θ₃ = 0` means a
 > **straight** leg. That's where the sign in the formula comes from.
 
-**Step 4 — femur.** *"The femur angle is two angles added. `β` is how far
-below horizontal the target lies. `ψ` is the angle between the femur and the
+**Step 4 — femur.** *"The femur angle is two angles added. `β = arctan(−z/r′)`
+is how far below horizontal the target lies. `ψ` is the angle between the femur and the
 line to the target, from the same triangle. `θ₂ = β − ψ`."*
 
 **Close with:** *"No iteration anywhere. The same number of operations every
