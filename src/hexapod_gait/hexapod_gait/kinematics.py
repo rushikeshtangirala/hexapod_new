@@ -81,12 +81,15 @@ joint, foot) with sides L2, L3, D. The interior angle at the tibia joint is
     =>  cos(t3) = (D^2 - L2^2 - L3^2) / (2*L2*L3)
 
 acos returns a value in [0, pi], so there are two valid solutions, +/-. This
-is the classic elbow-up / elbow-down ambiguity. We take the NEGATIVE root:
+is the classic elbow-up / elbow-down ambiguity. We take the POSITIVE root:
 
-    t3 = -acos(k)
+    t3 = +acos(k)          and correspondingly   t2 = beta - psi
 
-which is the insect-like configuration where the knee is raised above the
-foot. Verify against the standing pose in tools/pose.sh: t2 = +60 deg,
+which puts the femur out near horizontal and drops the tibia steeply to the
+ground: the classic insect posture. See the full rationale at the branch
+selection in inverse_kinematics() below. NOTE: the sign of psi follows the
+branch. Pairing +acos(k) with +psi silently solves for the other elbow and
+the foot lands somewhere else entirely. Verify against the standing pose in tools/pose.sh: t2 = +60 deg,
 t3 = -30 deg. Taking the positive root would give a mechanically valid but
 inverted "knee down" leg that collides with the ground during swing.
 
@@ -157,11 +160,11 @@ class LegGeometry:
     # is the right long-term answer.
     coxa_min: float = math.radians(-60.0)
     coxa_max: float = math.radians(60.0)
-    # femur_max is 120, not 90. Placing a foot under the robot rather than
-    # out to the side requires the femur to swing past vertical, because the
-    # 0.15 m coxa puts the femur joint well outboard. See the note in
-    # common_properties.xacro; it implies a servo horn offset at assembly.
-    femur_min: float = math.radians(-60.0)
+    # Symmetric +/- 90 again in revision 2. The asymmetric range existed only
+    # because the old 150 mm coxa forced the femur past vertical; the 61 mm
+    # coxa removes the need, and a symmetric range means the servo can be
+    # assembled centred.
+    femur_min: float = math.radians(-90.0)
     femur_max: float = math.radians(90.0)
     tibia_min: float = math.radians(-60.0)
     tibia_max: float = math.radians(130.0)
@@ -351,7 +354,17 @@ def within_limits(geom: LegGeometry, t1: float, t2: float, t3: float
 # The robot: six legs, matching hexapod.urdf.xacro
 # ---------------------------------------------------------------------------
 
-L1, L2, L3 = 0.1500, 0.1166, 0.1500
+# REVISION 2 leg, 2026-09-09. Was 0.1500 / 0.1166 / 0.1500.
+#
+# The old geometry put a SHORT femur between a long coxa and a long tibia,
+# which is the worst arrangement for a walker: the 150 mm coxa pushed the
+# femur joint so far outboard that reaching a foot under the robot required
+# the femur to swing past vertical. The new 61 / 120 / 110 is a normal insect
+# leg and the constraint disappears.
+#
+# MUST MATCH common_properties.xacro. The duplication is real and has bitten
+# before; parsing the URDF at startup is the proper fix and is Phase 9 work.
+L1, L2, L3 = 0.0610, 0.1200, 0.1100
 
 MOUNT_X_FRONT, MOUNT_X_MID, MOUNT_X_REAR = 0.095, 0.000, -0.095
 MOUNT_Y_FRONT, MOUNT_Y_MID, MOUNT_Y_REAR = 0.070, 0.100, 0.070

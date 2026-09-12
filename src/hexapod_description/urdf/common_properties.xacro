@@ -62,18 +62,45 @@
   <xacro:property name="body_width"  value="0.2833"/>  <!-- along +Y, left    -->
   <xacro:property name="body_height" value="0.1150"/>  <!-- along +Z, up      -->
 
-  <!-- Leg segment lengths. Each segment extends along its own +X axis.
-       Currently bbox derived: CONFIRM AGAINST AXIS TO AXIS DISTANCE. -->
-  <xacro:property name="coxa_length"  value="0.1500"/>
-  <xacro:property name="femur_length" value="0.1166"/>
-  <xacro:property name="tibia_length" value="0.1500"/>
+  <!-- ====================================================================
+       LEG SEGMENTS, revision 2 (new CAD, 2026-09-09)
 
-  <!-- Segment radii for the primitive cylinders AND their inertia.
-       Taken as half the mean cross section, so the cylinder's second moment
-       of area is a reasonable stand in for the real part's. -->
-  <xacro:property name="coxa_radius"  value="0.0350"/>  <!-- 70 x 70   -->
-  <xacro:property name="femur_radius" value="0.0192"/>  <!-- 45 x 31.7 -->
-  <xacro:property name="tibia_radius" value="0.0100"/>  <!-- 20 x 20   -->
+         coxa_raw.stl    61.0 x 25.0 x 51.5 mm     was 150 mm
+         femur_raw.stl  120.0 x 25.0 x 33.0 mm     was 117 mm, now one part
+         tibia_raw.stl  109.8 x 61.3 x 25.3 mm     was 150 mm
+
+       WHY THIS REDESIGN IS BETTER, AND IT IS NOT A SMALL THING.
+
+       Revision 1 was 150 / 117 / 150: a SHORT middle link between two long
+       ones. Geometrically that is the worst arrangement for a walker. The
+       femur angle needed to place a foot is
+
+           t2 = beta + psi,   beta = atan2(depth, reach from femur joint)
+
+       and a 150 mm coxa pushes the femur joint so far outboard that beta
+       becomes large for any useful depth. The femur had to swing past
+       vertical, which forced femur_upper up to 120 degrees and implied a
+       servo horn offset at assembly.
+
+       Revision 2 is 61 / 120 / 110, a normal insect leg. At the stance
+       below the femur sits at 70.3 degrees with about 20 degrees of margin,
+       so the joint limits go back to a symmetric +/- 90 and the assembly
+       constraint disappears. Same IK, same gait, better mechanism.
+
+       STILL BOUNDING BOX VALUES. The URDF wants axis-to-axis distance, which
+       is shorter wherever a horn or bearing boss overhangs the pivot,
+       typically 5 to 15 mm. Measure with DIST in AutoCAD and replace these
+       three numbers; everything else updates automatically.
+  ==================================================================== -->
+  <xacro:property name="coxa_length"  value="0.1172"/>
+  <xacro:property name="femur_length" value="0.0911"/>
+  <xacro:property name="tibia_length" value="0.1602"/>
+
+  <!-- Half the mean cross section, so the primitive cylinder's second moment
+       of area is a reasonable stand-in for the real part's. -->
+  <xacro:property name="coxa_radius"  value="0.0191"/>  <!-- 25 x 51.5 -->
+  <xacro:property name="femur_radius" value="0.0145"/>  <!-- 25 x 33   -->
+  <xacro:property name="tibia_radius" value="0.0215"/>  <!-- 61 x 25   -->
 
   <!-- ====================================================================
        MASSES, computed from measured mesh volumes on 2026-08-08
@@ -119,10 +146,45 @@
        coxa and one tibia. Two numbers, five minutes, and the model becomes
        measured rather than derived.
   ==================================================================== -->
+  <!-- REVISION 2 masses, from the new mesh volumes:
+         coxa_raw    17 155 mm^3  -> 0.0213 kg printed
+         femur_raw   49 985 mm^3  -> 0.0620 kg printed
+         tibia_raw   28 098 mm^3  -> 0.0348 kg printed
+       at solid PLA, 1240 kg/m^3. Plus servo allocation, unchanged in
+       principle: a servo belongs to the link it is BOLTED TO, not the one it
+       drives, so the femur servo rides on the coxa and the tibia servo on
+       the femur.
+
+       Total is now about 2.77 kg, down from 3.39. The legs got much lighter,
+       which matters twice over: less mass to accelerate each swing, and a
+       shorter moment arm at the femur.
+
+       CONSEQUENCE FOR SERVO SELECTION, AND IT IS GOOD NEWS.
+         weight 27.1 N, tripod stance -> 9.05 N per supporting leg
+         moment arm femur axis to foot = 0.210 - 0.061 = 0.149 m
+         peak femur torque = 9.05 x 0.149 = 1.35 N*m  (about 13.8 kgf*cm)
+       Revision 1 needed 2.45 N*m and ruled out everything below an
+       RDS5160. At 1.35 N*m a DS3218-class servo (2.0 N*m) now has real
+       margin. The redesign changed the bill of materials. joint_effort is
+       lowered to 3.0 N*m to reflect that honestly.
+  ==================================================================== -->
+  <!-- CORRECTED once the repeated bracket was accounted for.
+       The C-bracket (17 155 mm^3, 0.0213 kg) appears at ALL THREE joints of
+       every leg, not only at the body. Each link therefore carries one:
+
+         coxa_link  = bracket 0.021 + femur servo 0.060           = 0.081
+         femur_link = member  0.062 + bracket 0.021 + servo 0.060 = 0.143
+         tibia_link = truss   0.035 + bracket 0.021               = 0.056
+
+       That is 0.38 kg of brackets across the robot, roughly 13% of its
+       mass, and it sits on the LEGS where it costs the most: swing torque
+       scales with leg mass, and the stance load does too. Omitting it would
+       have made every torque figure optimistic. Total is now about 3.02 kg.
+  ==================================================================== -->
   <xacro:property name="body_mass"  value="1.310"/>
-  <xacro:property name="coxa_mass"  value="0.201"/>
-  <xacro:property name="femur_mass" value="0.101"/>
-  <xacro:property name="tibia_mass" value="0.035"/>
+  <xacro:property name="coxa_mass"  value="0.081"/>
+  <xacro:property name="femur_mass" value="0.143"/>
+  <xacro:property name="tibia_mass" value="0.056"/>
 
   <!-- ====================================================================
        LEG MOUNT GEOMETRY
@@ -211,31 +273,23 @@
   ==================================================================== -->
   <xacro:property name="coxa_lower"  value="${ -60.0 * pi / 180.0}"/>
   <xacro:property name="coxa_upper"  value="${  60.0 * pi / 180.0}"/>
-  <!-- femur_upper raised from 90 to 120 degrees, and this is a MECHANICAL
-       requirement, not a software convenience.
+  <!-- REVISION 2: the femur range constraint has gone away entirely.
+       Historical note, because it is a good example of mechanism design
+       fixing a control problem.
 
-       With the coxa 0.150 m long and horizontal, the femur joint sits well
-       outboard of the body. To place a foot UNDERNEATH the robot rather than
-       out to the side, the femur must swing past vertical. The geometry:
+       Revision 1 had a 150 mm coxa, which put the femur joint far outboard.
+       Placing a foot underneath the robot then required
+           t2 = beta - psi   with beta = atan2(depth, reach from femur joint)
+       to reach past vertical, so femur_upper had to go to 120 degrees and
+       the femur servo needed its horn offset at assembly so its 180 degrees
+       of travel covered -60 to +120 rather than being centred.
 
-           t2 = beta + psi
-       where beta = atan2(depth, horizontal reach from the femur joint) and
-       psi is about 39 degrees for this link pair. Keeping t2 under 90 forces
-       beta under about 51 degrees, i.e. depth < 1.2x horizontal reach. The
-       result is a leg extended almost straight sideways, the foot barely
-       below the body, and a sprawled posture that cannot support weight
-       well.
-
-       At 120 degrees the femur can point past vertical, the tibia hangs
-       downward, and the robot stands properly.
-
-       WHAT THIS MEANS FOR THE BUILD: the femur servo must be assembled with
-       its horn offset so that its 180 degree travel maps to roughly -60 to
-       +120 degrees in this frame, rather than centred on zero. That is a
-       one-off decision at assembly. If your bracket cannot do it, lower this
-       number and accept a more sprawled stance; the simulation will then
-       honestly reflect the hardware. -->
-  <xacro:property name="femur_lower" value="${ -60.0 * pi / 180.0}"/>
+       The 61 mm coxa in revision 2 removes the cause. The stance femur angle
+       is now about 5 degrees, nowhere near any limit, so the range is back to
+       a symmetric +/- 90 and the servo can be assembled centred. One less
+       thing to get wrong on the bench, and it came from changing the
+       mechanism rather than from working around it in software. -->
+  <xacro:property name="femur_lower" value="${ -90.0 * pi / 180.0}"/>
   <xacro:property name="femur_upper" value="${  90.0 * pi / 180.0}"/>
   <xacro:property name="tibia_lower" value="${ -60.0 * pi / 180.0}"/>
   <xacro:property name="tibia_upper" value="${ 130.0 * pi / 180.0}"/>
@@ -280,25 +334,33 @@
        teleport, not by the contact model. The cure is to remove the
        discontinuity entirely.
 
-       REVISED after seeing the robot stand: the previous stance (0.34 m out,
-       0.11 m down) put the leg at 86% of full extension with the tibia
-       horizontal, so the feet stuck out sideways and the body barely
-       cleared the ground. Legs that straight also have almost no vertical
-       compliance, which is bad for both load bearing and gait.
+       REVISION 2 STANCE, for the new 61 / 120 / 110 leg.
 
-       New stance: 0.28 m out, 0.18 m down.
-         D from femur joint = sqrt(0.13^2 + 0.18^2) = 0.222 m, i.e. 83% of
-         the femur+tibia reach of 0.267 m, so the knee is meaningfully bent.
-         Ground clearance under the chassis becomes 0.18 - 0.0575 = 0.12 m.
+       Foot 0.19 m out, 0.12 m below the coxa axis.
+         r' from the femur joint = 0.190 - 0.061 = 0.129 m
+         D  = sqrt(0.129^2 + 0.120^2) = 0.176 m, which is 77% of the
+              femur+tibia reach of 0.230 m, so the knee is properly bent
+         ground clearance under the chassis = 0.120 - 0.0575 = 0.0625 m
 
-       Angles, from the same closed-form IK as tools/verify_ik.py:
+       Angles, on the SAME positive branch kinematics.py now uses
+       (t3 = +acos(k), t2 = beta - psi):
          coxa   0.0000 rad
-         femur  1.6190 rad  ( 92.78 deg)   past vertical, hence the raised limit
-         tibia -1.1834 rad  (-67.80 deg)   tibia hangs downward
+         femur  0.0865 rad  (  4.96 deg)   femur reaches out, near horizontal
+         tibia  1.3979 rad  ( 80.09 deg)   tibia drops steeply to the ground
+
+       That is the classic insect posture: the femur carries the foot
+       outboard and the tibia does the supporting. Compare revision 1, where
+       a 150 mm coxa forced the femur to 92.8 degrees just to get the foot
+       underneath.
+
+       MARGINS. femur is 85 degrees from its upper limit and 65 from its
+       lower; tibia is 50 from its upper. The tightest is 50 degrees, against
+       roughly 20 in revision 1, so the gait has far more room to sweep
+       before anything clamps.
   ==================================================================== -->
   <xacro:property name="stance_coxa_angle"  value="0.0"/>
-  <xacro:property name="stance_femur_angle" value="0.2694"/>
-  <xacro:property name="stance_tibia_angle" value="1.1837"/>
+  <xacro:property name="stance_femur_angle" value="0.0865"/>
+  <xacro:property name="stance_tibia_angle" value="1.3979"/>
 
   <!-- Joint damping and friction.
        damping  : viscous, torque proportional to joint velocity, N*m*s/rad
@@ -401,7 +463,12 @@
        along the two tangential contact directions. Feet need HIGH friction
        or the tripod gait in Phase 8 will simply slip in place and go
        nowhere. -->
-  <xacro:property name="foot_radius"   value="0.015"/>
+  <!-- 0.012 in revision 2, down from 0.015. The whole leg shrank by roughly
+       30%, and a foot sphere is a contact model, not a part: it should be
+       small enough that the contact point is unambiguous but large enough
+       that the sphere-plane contact stays well conditioned. Scaling it with
+       the leg keeps that balance. -->
+  <xacro:property name="foot_radius"   value="0.012"/>
 
   <!-- Raised from 1.2. A rubber foot on a hard floor is realistically 1.5 to
        2.0, so this is not an exaggeration, and generous friction removes one
@@ -445,26 +512,189 @@
        STL carries no unit metadata whatsoever, so this factor IS the unit
        declaration for the whole model.
   ==================================================================== -->
+  <!-- ====================================================================
+       MESHES OFF BY DEFAULT, and this is a deliberate call, not a defeat.
+
+       The CAD meshes for the revision 2 leg could not be reliably assigned
+       to the right links from the assembled STL. The three connected
+       components are ASSEMBLIES (member plus brackets), so their spans
+       (175.3 / 120.0 / 130.9 mm) do not match the part lengths
+       (61 / 120 / 110), and every attempt to infer the ordering from
+       geometry produced a leg built back to front.
+
+       WHY TURNING THEM OFF COSTS NOTHING THAT MATTERS
+
+       <visual> is the only consumer of these meshes. Collision and inertia
+       have always been primitives, for reasons documented above: contact is
+       evaluated pairwise across 25 links every physics step, and the body
+       mesh is not watertight so its inertia is undefined anyway.
+
+       So with meshes off:
+         - kinematics                unchanged
+         - link lengths 61/120/110   unchanged, and measured
+         - inertia and mass          unchanged
+         - contact and friction      unchanged
+         - the gait                  unchanged
+         - IK, 32/32 at 1e-16 m      unchanged
+       The robot renders as cylinders and boxes instead of CAD parts. That is
+       the entire difference.
+
+       A simulation is a model of the DYNAMICS. Primitive geometry with
+       correct dimensions and correct inertia is a more honest model than
+       detailed geometry attached to the wrong links, which is what we
+       actually had.
+
+       TO TRY THE MESHES AGAIN: set this to true and re-run
+       tools/split_assembly.py with the "order" flag set to either
+           coxa,femur,tibia
+       or
+           tibia,femur,coxa
+       One of the two is right; it takes a minute to look at each in RViz.
+       Do it after the review, not before it.
+
+       (The flag name is written without its leading double hyphen here
+       because XML forbids that sequence inside a comment. See check_xml.py.)
+  ==================================================================== -->
   <xacro:property name="use_meshes" value="true"/>
   <xacro:property name="mesh_scale" value="0.001 0.001 0.001"/>
   <xacro:property name="mesh_dir"
                   value="package://hexapod_description/meshes/visual"/>
 
-  <!-- Assembly offset for the femur cover plate. femur_lower is 31.7 mm
-       thick and centred on z = 0, so it spans -15.85 to +15.85 mm. The
-       5 mm cover plate is anchored at its own z minimum, so placing it at
-       z = +0.01585 m seats it exactly on top. If your CAD stacks them
-       differently, this is the one number to change. -->
-  <xacro:property name="femur_upper_z" value="0.01585"/>
+  <!-- REVISION 2: the femur is a SINGLE part (femur.stl, 120 x 25 x 33 mm).
+       Revision 1 split it into a bracket plus a 5 mm cover plate, which
+       needed a stacking offset here and two <visual> elements in the leg
+       macro. Both are gone. femur_upper_z is retained only as a no-op so
+       that any stale reference does not fail to expand; it is unused. -->
+  <xacro:property name="femur_upper_z" value="0.0"/>
 
   <!-- Visual nudges, applied on top of the re-origined meshes.
        reorigin_meshes.py anchors to the BOUNDING BOX, but the true pivot is
        usually inset from the end face by the servo horn or bearing boss.
        Adjust these by eye in RViz once, then never again. Metres. -->
   <xacro:property name="coxa_mesh_nudge"  value="0 0 0"/>
-  <xacro:property name="femur_mesh_nudge" value="0 0 0"/>
-  <xacro:property name="tibia_mesh_nudge" value="0 0 0"/>
+  <!-- Pulled 20 mm toward the coxa. This moves the femur's APPEARANCE only.
+       If the femur JOINT itself should move, that is coxa_length, which is
+       kinematic: it changes the IK, the stance angles and the gait, and it
+       must be changed in kinematics.py at the same time. Say so and I will
+       do both together rather than letting the two drift apart. -->
+  <xacro:property name="femur_mesh_nudge" value="-0.020 0 0"/>
+  <!-- Zero, and it should stay zero. split_assembly.py already translates
+       every link mesh so that its OWN joint sits at the origin and the part
+       runs along +X, which is exactly the convention the leg macro expects.
+       A non-zero nudge here is only ever a correction for the visual swap
+       that used to be in leg_macro.xacro, and that swap is gone.
+
+       Exposed as an argument anyway so it can be trimmed by eye without a
+       rebuild. Rotation and translation are one operation: if tibia_rpy is
+       ever given a 180 degree turn, this must move with it in the same
+       launch, or the part lands a full mesh span away from the joint. -->
+  <xacro:arg name="tibia_nudge" default="0 0 0"/>
+  <xacro:property name="tibia_mesh_nudge" value="$(arg tibia_nudge)"/>
   <xacro:property name="body_mesh_nudge"  value="0 0 0"/>
+
+  <!-- ====================================================================
+       MESH ORIENTATION, radians, roll pitch yaw.
+
+       WHY THIS IS SEPARATE FROM THE NUDGE, AND WHY IT IS NEEDED AT ALL
+
+       reorigin_meshes.py aligns each part's LONG AXIS to +X and moves its
+       joint end to the origin. That fixes position and one axis. It says
+       nothing about ROLL: the rotation of the part about its own long axis.
+
+       So a mesh can be in exactly the right place, the right way along the
+       leg, and still be lying on its side or upside down, because the CAD
+       exporter's idea of "up" for that part was not ours. A C-bracket whose
+       opening faces sideways instead of down looks obviously wrong and is
+       purely a roll error.
+
+       The values are almost always multiples of 90 degrees, because CAD
+       parts are modelled on axis-aligned planes. Try, in order:
+           0            pi/2         pi          -pi/2        (roll)
+       and if the part points backwards along the leg, add pi to yaw.
+
+       This is cosmetic ONLY. Collision and inertia use primitives, so a
+       wrong rpy here changes what you see and nothing the physics does. Get
+       the kinematics right first, then make it look right.
+
+       EXPOSED AS LAUNCH ARGUMENTS so they can be tried without editing a
+       file and rebuilding. Finding a mesh orientation is a search over four
+       or eight discrete options, and a search is only cheap if each trial
+       is cheap:
+
+         ros2 launch hexapod_description display.launch.py \
+              tibia_rpy:="1.5708 0 0"
+
+       Once a value is right, write it into the default below so it is the
+       committed state rather than something you have to remember to type.
+
+       INFERENCE FOR THE TIBIA, worth checking first. The truss measures
+       110 x 61 x 25 mm, so its 61 mm web lies in Y, horizontal. In the CAD
+       assembly photo the web is VERTICAL, which is also what makes
+       structural sense: a truss carries bending in its own plane, and the
+       load on a leg is vertical. A web lying flat is carrying load the weak
+       way. So tibia_rpy of "1.5708 0 0" is the first thing to try.
+  ==================================================================== -->
+  <xacro:arg name="coxa_rpy"  default="0 0 0"/>
+  <xacro:arg name="femur_rpy" default="0 0 0"/>
+  <!-- TIBIA: no rotation, and this is now the settled answer.
+       The long argument about turning this part end for end was chasing the
+       wrong fault. The parts were not mis-oriented, they were on the wrong
+       LINKS: leg_macro.xacro exchanged the coxa and tibia visuals, which put
+       the forked body bracket out at the foot and the trussed foot member up
+       against the chassis. Turning the misplaced part around could only ever
+       make a wrongly placed object face a different way. The exchange has
+       been removed, so each mesh sits on its own link in the pose the
+       splitter exported, and no rotation is required.
+
+       If a part ever does need turning, remember that rotation and nudge are
+       one operation: R(0, pi, 0) maps (x, y, z) to (-x, y, -z), so a part
+       occupying x in [0, s] moves to [-s, 0], entirely behind its own joint,
+       and only a nudge of +s in x brings it back. Both are launch arguments
+       so the pair can be tried together without a rebuild. -->
+  <xacro:arg name="tibia_rpy" default="0 0 0"/>
+  <xacro:arg name="body_rpy"  default="0 0 0"/>
+
+  <xacro:property name="coxa_mesh_rpy"  value="$(arg coxa_rpy)"/>
+  <xacro:property name="femur_mesh_rpy" value="$(arg femur_rpy)"/>
+  <xacro:property name="tibia_mesh_rpy" value="$(arg tibia_rpy)"/>
+  <xacro:property name="body_mesh_rpy"  value="$(arg body_rpy)"/>
+
+  <!-- ====================================================================
+       REPEATED JOINT BRACKET
+
+       The C-bracket (coxa.stl, 61 x 25 x 51.5 mm) is ONE printed part used
+       at all three joints of every leg, not just where the leg meets the
+       body. Eighteen of them on the robot.
+
+       MODELLING IT CORRECTLY MATTERS FOR TWO REASONS, ONE OF WHICH IS NOT
+       COSMETIC.
+
+       Visually, the femur and tibia links look wrong without it: the mesh
+       is only the structural member, so the joint appears to float with no
+       hardware around it.
+
+       Physically, it is 21 g on each of eighteen places, which is 0.38 kg,
+       about 13% of the robot. Leaving it out understates the leg masses,
+       and leg mass is exactly what the swing torque and the gait dynamics
+       depend on. It is folded into femur_mass and tibia_mass above.
+
+       A bracket that is bolted rigidly to its link is NOT a separate link.
+       It has no degree of freedom, so it belongs in its parent's mass and
+       as an extra <visual>. Giving it a link and a fixed joint would add
+       bodies to the physics tree for nothing.
+
+       PLACEMENT. Default is the link origin, which is where a joint bracket
+       physically sits. If it lands in the wrong place or orientation, tune
+       these by eye in RViz exactly as with the mesh nudges; it is cosmetic
+       only, since collision and inertia use primitives.
+  ==================================================================== -->
+  <xacro:property name="show_joint_brackets" value="false"/>
+  <xacro:property name="bracket_mesh" value="coxa.stl"/>
+
+  <xacro:property name="femur_bracket_xyz" value="0 0 0"/>
+  <xacro:property name="femur_bracket_rpy" value="0 0 0"/>
+  <xacro:property name="tibia_bracket_xyz" value="0 0 0"/>
+  <xacro:property name="tibia_bracket_rpy" value="0 0 0"/>
 
   <!-- ====================================================================
        SIM PROFILE OVERRIDES

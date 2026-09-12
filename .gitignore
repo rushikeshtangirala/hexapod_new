@@ -13,7 +13,15 @@ Thumbs.db
 desktop.ini
 ~$*
 
-# Superseded STL exports kept only for provenance.
-# The URDF references the re-origined versions (coxa.stl, femur_lower.stl,
-# femur_upper.stl, tibia.stl, body.stl). Files with spaces in the name break
-# package:// resolution and must never be referenced.
+# NOTE ON THE STL FILES, because this looked like a missing rule.
+#
+# Nothing is excluded here, deliberately. The superseded exports whose names
+# contain spaces ("coxa new.stl", "femur top blah.stl" and the rest) are kept
+# and TRACKED as CAD provenance: they show where the link meshes came from,
+# which the report needs. "leg assembled.stl" is not provenance at all, it is
+# a live input to tools/split_assembly.py, so it must be committed.
+#
+# What matters is that the URDF references only the re-origined files
+# (coxa.stl, femur.stl, tibia.stl, body.stl). A filename containing a space
+# breaks package:// resolution, so the originals must never be referenced
+# even though they are stored.

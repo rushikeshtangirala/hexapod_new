@@ -109,7 +109,9 @@ class BodyDriver(Node):
         # foot sphere radius: 0.180 + 0.015. If the feet visibly float or
         # sink, this is the number to adjust, and it is the ONLY number here
         # that is a presentation choice rather than a derived quantity.
-        self.declare_parameter("ride_height", 0.195)
+        # 0.132 = stance depth 0.12 + foot sphere radius 0.012 for the
+        # revision 2 leg (61 / 120 / 110). Was 0.195.
+        self.declare_parameter("ride_height", 0.132)
         self.declare_parameter("max_linear_speed", 0.10)
         self.declare_parameter("max_angular_speed", 0.50)
         # Imported, not typed in. See the module note.

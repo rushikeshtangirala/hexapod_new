@@ -128,7 +128,7 @@
   <link name="base_link">
     <xacro:if value="${use_meshes}">
       <visual>
-        <origin xyz="${body_mesh_nudge}" rpy="0 0 0"/>
+        <origin xyz="${body_mesh_nudge}" rpy="${body_mesh_rpy}"/>
         <geometry>
           <mesh filename="${mesh_dir}/body.stl" scale="${mesh_scale}"/>
         </geometry>

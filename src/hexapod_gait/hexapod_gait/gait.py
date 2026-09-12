@@ -150,8 +150,15 @@ class GaitParams:
     # ground clearance was minimal, and a nearly straight leg has almost no
     # vertical compliance to absorb touchdown. This stance bends the knee
     # properly and gives 0.12 m of clearance under the chassis.
-    stance_radius: float = 0.28
-    stance_height: float = -0.18
+    # REVISION 2 leg (61 / 120 / 110). Was 0.28 / -0.18 for the old
+    # 150 / 117 / 150 leg, whose total reach was 0.417 m; the new leg reaches
+    # 0.291 m, so the stance scales down with it.
+    #
+    # 0.19 out, 0.12 down gives D = 0.176 m from the femur joint, 77% of the
+    # 0.230 m femur+tibia reach: knee properly bent, with vertical compliance
+    # to absorb touchdown. Ground clearance under the chassis is 0.0625 m.
+    stance_radius: float = 0.19
+    stance_height: float = -0.12
 
     # Safety clamp on stride length. Bounds how far a foot can stray from
     # its nominal position, which bounds the IK solution away from the edge

@@ -440,18 +440,18 @@ def generate_launch_description() -> LaunchDescription:
         # 0.20 to suspend the robot and watch the leg trajectories in free
         # air, which is useful for checking the swing profile without
         # contact confusing the picture.
-        # 0.195 = stance depth 0.18 + foot sphere radius 0.015. Puts the
+        # 0.132 = stance depth 0.12 + foot sphere radius 0.012. Puts the
         # stance feet exactly on the ground plane. Raise it to suspend the
         # robot and inspect the swing trajectory without contact.
         # Free-base spawn height. Must exceed stance depth (0.180) plus foot
         # radius (0.015) or the feet spawn underground and the robot is
         # ejected. See the long note next to spawn_entity.
-        DeclareLaunchArgument("spawn_height", default_value="0.22",
+        DeclareLaunchArgument("spawn_height", default_value="0.16",
                               description="Free-base spawn height, metres. "
-                                          "Must be > 0.195."),
+                                          "Must be > 0.132."),
 
-        DeclareLaunchArgument("fix_base_height", default_value="0.195",
-                              description="Height of the world anchor. 0.195 "
+        DeclareLaunchArgument("fix_base_height", default_value="0.132",
+                              description="Height of the world anchor. 0.132 "
                                           "puts the feet on the ground."),
 
         # controllers:=false spawns NO controllers, so nothing writes to the

@@ -131,11 +131,11 @@ def generate_launch_description() -> LaunchDescription:
                         "gait output.",
         ),
         DeclareLaunchArgument(
-            "stance_radius", default_value="0.28",
+            "stance_radius", default_value="0.19",
             description="Nominal foot distance from the coxa axis, metres.",
         ),
         DeclareLaunchArgument(
-            "stance_height", default_value="-0.18",
+            "stance_height", default_value="-0.12",
             description="Nominal foot depth below the coxa axis, metres.",
         ),
 

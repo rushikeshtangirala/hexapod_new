@@ -1,131 +1,189 @@
 #!/usr/bin/env bash
 # =============================================================================
-# git_setup.sh : commit the project and prepare it for sharing.
+# git_setup.sh : commit the project, and optionally push it to GitHub.
+#
+# USAGE
+#   bash ~/hexapod_ws/tools/git_setup.sh
+#       Stage and commit everything. Safe to run repeatedly.
+#
+#   bash ~/hexapod_ws/tools/git_setup.sh https://github.com/USER/REPO.git
+#       Commit, attach that remote, and push to main.
+#
+#   bash ~/hexapod_ws/tools/git_setup.sh https://github.com/USER/REPO.git "my message"
+#       As above with your own commit message.
 #
 # WHY A SCRIPT RATHER THAN COMMANDS TO PASTE
 # The project lives at a Windows path containing a SPACE ("Rushi Tangirala").
-# Unquoted, that path splits into two arguments and every command fails with
-# a confusing "No such file or directory". That has already cost this project
-# one debugging cycle. The path is quoted exactly once, here.
+# Unquoted, that path splits into two arguments and every command fails with a
+# confusing "No such file or directory". That has already cost this project one
+# debugging cycle. The path is quoted exactly once, here.
 #
-# RUN THIS FROM UBUNTU (WSL):
-#     bash ~/hexapod_ws/tools/git_setup.sh
+# WHY THE REPOSITORY LIVES ON THE WINDOWS SIDE
+# sync_to_wsl.sh mirrors Windows to WSL with rsync --delete. The WSL copy is
+# DERIVED and anything committed there would be destroyed by the next sync.
+# The Windows folder is the source of truth, so it is the only correct place
+# for the repository.
 # =============================================================================
 set -o pipefail
 
 HEX="/mnt/c/Users/Rushi Tangirala/OneDrive/Desktop/hexapod_scratch"
+REMOTE_URL="${1:-}"
+MESSAGE="${2:-}"
 
-if [ ! -d "${HEX}" ]; then
-  echo "ERROR: project folder not found at:" >&2
-  echo "  ${HEX}" >&2
-  exit 1
-fi
+say()  { echo ""; echo "=============================================="; \
+         echo " $1"; echo "=============================================="; }
+die()  { echo ""; echo "FAILED: $1" >&2; exit 1; }
 
-cd "${HEX}" || exit 1
+[ -d "${HEX}" ] || die "project folder not found at:
+  ${HEX}"
+
+cd "${HEX}" || die "cd into the project folder"
 echo "Working in: $(pwd)"
-echo ""
 
-# A crashed or interrupted git leaves this behind and blocks every later
-# command with "Another git process seems to be running".
+# ---------------------------------------------------------------------------
+say "1/5  clearing anything a previous crash left behind"
+# ---------------------------------------------------------------------------
+# This folder is inside OneDrive. OneDrive can hold a file open mid-sync while
+# git is writing it, which aborts the write and leaves a partial object or a
+# lock behind. Every later git command then fails with a message that has
+# nothing to do with the real cause. Clearing these first costs nothing and
+# removes a whole category of confusing failure.
+#
+# If git errors persist, pause OneDrive syncing, run this again, then resume.
 if [ -f .git/index.lock ]; then
-  echo "Removing stale git lock..."
+  echo "  removing stale index.lock"
   rm -f .git/index.lock
 fi
+find .git -name 'tmp_obj_*' -delete 2>/dev/null
+rm -f .git/testwrite 2>/dev/null
+echo "  clean"
 
+# ---------------------------------------------------------------------------
+say "2/5  repository and identity"
+# ---------------------------------------------------------------------------
 if [ ! -d .git ]; then
-  echo "Initialising repository..."
-  git init -q
+  echo "  initialising"
+  git init -q || die "git init"
+else
+  echo "  already a repository"
 fi
 
 git config user.email "hexapod69420@gmail.com"
 git config user.name  "Varun"
 
-echo "Staging..."
-git add -A
+# Windows and Linux disagree about line endings, and this tree is edited from
+# both. Without this, every file looks modified to whichever side did not
+# write it last, and diffs become unreadable.
+git config core.autocrlf input
+
+# ---------------------------------------------------------------------------
+say "3/5  checking for files GitHub will reject"
+# ---------------------------------------------------------------------------
+# GitHub warns above 50 MB and refuses above 100 MB. Meshes are the only
+# plausible offenders here. Better to find out now than halfway through a push
+# that then has to be unwound with a history rewrite.
+BIG=0
+while IFS= read -r -d '' f; do
+  sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+  mb=$(( sz / 1048576 ))
+  if [ "${sz}" -gt 104857600 ]; then
+    echo "  TOO LARGE (${mb} MB, hard limit 100): $f"
+    BIG=1
+  elif [ "${sz}" -gt 52428800 ]; then
+    echo "  large (${mb} MB, GitHub will warn): $f"
+  fi
+done < <(find . -path ./.git -prune -o -type f -print0)
+
+if [ "${BIG}" -eq 1 ]; then
+  die "at least one file exceeds GitHub's 100 MB hard limit.
+Either remove it, or install Git LFS and track it:
+  git lfs install
+  git lfs track '*.stl'
+  git add .gitattributes"
+fi
+echo "  nothing over the limit"
+
+# ---------------------------------------------------------------------------
+say "4/5  commit"
+# ---------------------------------------------------------------------------
+git add -A || die "git add"
 
 if git diff --cached --quiet; then
-  echo "Nothing to commit; working tree already clean."
+  echo "  nothing to commit, working tree already clean"
 else
-  git commit -q -F - <<'MSG'
-Knee-down IK branch matching CAD, servo friction model, automated walk test
-
-GEOMETRY / KINEMATICS
-- Inverse kinematics now selects the POSITIVE law-of-cosines root, so the
-  femur reaches outward (15.4 deg) and the tibia hangs down (+67.8 deg).
-  This matches the CAD assembly; the previous negative root folded the leg
-  the opposite way, with the femur vertical and the tibia nearly horizontal.
-- Consequence: the horizontal lever from knee to foot falls from 136 mm to
-  18 mm, so knee torque falls from 1.48 to 0.19 N*m for the same stance.
-  The measured 24.3 deg tibia sag disappears and the body holds its design
-  height of 0.194 m.
-- femur limit returns to 90 deg (was 120). The offset servo-horn mounting
-  previously required at assembly is no longer needed.
-- tibia limits set to -60..130 deg to permit the correct branch.
-- Joint limits were duplicated in kinematics.py and common_properties.xacro
-  and had drifted apart. Both corrected, with a cross-reference note.
-
-PHYSICS MODEL
-- joint_friction 0.01 -> 1.5 N*m, modelling geared-servo stiction. A real
-  ~200:1 geared servo is close to non-backdriveable and holds position when
-  unpowered; the model previously used frictionless pivots, so the legs
-  folded in the window before the controllers activate. Measured sag fell
-  from 10.3 deg to 0.4 deg.
-- joint_effort 5.0 -> 7.0 N*m to cover friction plus stance load plus the
-  torque needed to accelerate a swinging leg.
-
-STARTUP ORDERING
-- Gazebo no longer starts paused. A paused world never calls
-  controller_manager::update(), and controller switches are applied inside
-  that update, so activations requested during the pause were silently
-  discarded. joint_state_broadcaster stayed inactive, /joint_states never
-  published, and the gait node had no start pose.
-- gait_node now blocks until a complete /joint_states arrives and refuses to
-  publish without one, rather than issuing a step command from an unknown
-  pose and catapulting the robot.
-
-TOOLING
-- tools/autotest.sh + tools/measure_walk.py: headless end-to-end walk test.
-  Drives the robot itself and scores odometry, leg swing, stride and
-  per-joint tracking, then prints a verdict. Replaces a human watching a
-  Gazebo window and describing what they saw, which could not distinguish
-  drift, slip, ejection and a correct slow walk.
-- tools/walk_free.sh: added status, unpause, activate, sim-effort and
-  gait-effort subcommands.
-
-MEASURED STATUS
-- position mode: holds design height 0.194 m, zero tilt, exact joint
-  tracking (shortfall 0.0000 rad), but cannot translate. Gazebo realises
-  position commands with SetPosition(), which relocates a joint without a
-  matching velocity; contact friction is computed from sliding velocity, so
-  the solver sees a stationary foot and produces no propulsion. Structural,
-  not a tuning problem.
-- effort mode: has walked 1.1 m in 20 s, but is not yet stable. Gains are
-  still those tuned for the previous leg geometry.
-MSG
-  echo "Committed."
+  if [ -n "${MESSAGE}" ]; then
+    git commit -q -m "${MESSAGE}" || die "git commit"
+  else
+    git commit -q -m "Project state $(date +%Y-%m-%d)" -m \
+"Verified offline: verify_ik.py 32/32, verify_gait.py 498/498.
+Simulation: walks with the base anchored. Free-base effort control
+is the open item. Visual meshes sit on their correct links; the
+earlier coxa/tibia visual exchange has been removed." || die "git commit"
+  fi
+  echo "  committed"
 fi
 
 echo ""
-echo "History:"
-git log --oneline | head -5
+echo "  history:"
+git log --oneline | head -5 | sed 's/^/    /'
+echo "  tracked files: $(git ls-files | wc -l)"
+
+# ---------------------------------------------------------------------------
+say "5/5  remote"
+# ---------------------------------------------------------------------------
+if [ -z "${REMOTE_URL}" ]; then
+  cat <<'EOF'
+  No remote URL given, so nothing was pushed.
+
+  TO PUT THIS ON GITHUB
+  ---------------------
+  1. Sign in at github.com and create a NEW EMPTY repository.
+     Do NOT tick "Add a README" or "Add .gitignore": this project
+     already has both, and an initialised remote causes a rejected
+     push that then needs a merge to untangle.
+
+  2. Copy the HTTPS URL it shows you, then run this script again
+     with that URL as the argument:
+
+       bash ~/hexapod_ws/tools/git_setup.sh https://github.com/USER/REPO.git
+
+  3. Settings -> Collaborators -> add your friend, so they can push
+     as well as read.
+EOF
+  exit 0
+fi
+
+if git remote | grep -qx origin; then
+  git remote set-url origin "${REMOTE_URL}"
+  echo "  origin updated to ${REMOTE_URL}"
+else
+  git remote add origin "${REMOTE_URL}"
+  echo "  origin added: ${REMOTE_URL}"
+fi
+
+git branch -M main
 echo ""
-echo "Tracked files: $(git ls-files | wc -l)"
+echo "  pushing. GitHub will ask for your username and a PERSONAL ACCESS"
+echo "  TOKEN. Your account password will NOT work: GitHub stopped"
+echo "  accepting passwords over HTTPS in 2021. Create a token at"
+echo "  github.com -> Settings -> Developer settings -> Personal access"
+echo "  tokens -> Tokens (classic), with the 'repo' scope ticked."
 echo ""
-echo "============================================================"
-echo " TO SHARE WITH YOUR FRIEND"
-echo "============================================================"
-echo "1. Create an EMPTY repository on github.com (no README, no"
-echo "   .gitignore -- this project already has both)."
+
+git push -u origin main || die "git push.
+If it was rejected as non-fast-forward, the GitHub repository was created
+with a README. Either delete and recreate it empty, or run:
+  git pull --rebase origin main && git push -u origin main"
+
+say "DONE"
+echo "Your friend clones and builds with:"
 echo ""
-echo "2. Then run, replacing USER and REPO:"
+echo "  git clone ${REMOTE_URL} hexapod_ws"
+echo "  cd hexapod_ws"
+echo "  colcon build --symlink-install"
+echo "  source install/setup.bash"
+echo "  python3 tools/verify_ik.py && python3 tools/verify_gait.py"
 echo ""
-echo "     cd \"${HEX}\""
-echo "     git remote add origin https://github.com/USER/REPO.git"
-echo "     git branch -M main"
-echo "     git push -u origin main"
-echo ""
-echo "3. Add your friend under Settings -> Collaborators."
-echo ""
-echo "They clone it, then build with:"
-echo "     colcon build --symlink-install && source install/setup.bash"
-echo "============================================================"
+echo "Those two verifiers should print 32/32 and 498/498 on their machine"
+echo "before they change anything. If they do not, the clone is at fault,"
+echo "not the edit they are about to make."

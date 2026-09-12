@@ -60,8 +60,25 @@ def generate_launch_description() -> LaunchDescription:
     # something YAML-ish, and either mangles it or throws. This single missing
     # wrapper is one of the most common ROS 2 Humble launch failures.
     # ------------------------------------------------------------------
+    # Mesh orientations are passed through so they can be tried WITHOUT
+    # editing a file and rebuilding. Finding the right roll for a part is a
+    # search over a handful of 90 degree options, and a search is only
+    # practical if each trial is cheap:
+    #
+    #   ros2 launch hexapod_description display.launch.py \
+    #        tibia_rpy:="1.5708 0 0"
+    #
+    # Once a value is right, write it into the default in
+    # common_properties.xacro so it becomes the committed state.
     robot_description = ParameterValue(
-        Command(["xacro ", model_path]),
+        Command([
+            "xacro ", model_path,
+            " coxa_rpy:='", LaunchConfiguration("coxa_rpy"), "'",
+            " femur_rpy:='", LaunchConfiguration("femur_rpy"), "'",
+            " tibia_rpy:='", LaunchConfiguration("tibia_rpy"), "'",
+            " tibia_nudge:='", LaunchConfiguration("tibia_nudge"), "'",
+            " body_rpy:='", LaunchConfiguration("body_rpy"), "'",
+        ]),
         value_type=str,
     )
 
@@ -71,6 +88,26 @@ def generate_launch_description() -> LaunchDescription:
             default_value="true",
             description="Start joint_state_publisher_gui sliders.",
         ),
+        DeclareLaunchArgument("coxa_rpy", default_value="0 0 0",
+                              description="Coxa mesh roll pitch yaw, radians."),
+        DeclareLaunchArgument("femur_rpy", default_value="0 0 0",
+                              description="Femur mesh roll pitch yaw."),
+        # These two defaults MUST match the xacro defaults in
+        # common_properties.xacro. A DeclareLaunchArgument default is not a
+        # fallback to the xacro value, it REPLACES it: the argument is always
+        # passed on the xacro command line, so a stale "0 0 0" here silently
+        # cancels whatever is committed in the model. That is why the tibia
+        # flip appeared to do nothing when launched through this file even
+        # after the xacro default had been changed.
+        DeclareLaunchArgument("tibia_rpy", default_value="0 0 0",
+                              description="Tibia mesh roll pitch yaw."),
+        DeclareLaunchArgument("tibia_nudge", default_value="0 0 0",
+                              description="Tibia mesh offset, metres. Must "
+                                          "equal the mesh x span whenever "
+                                          "tibia_rpy contains a 180 degree "
+                                          "turn about Y."),
+        DeclareLaunchArgument("body_rpy", default_value="0 0 0",
+                              description="Body mesh roll pitch yaw."),
         DeclareLaunchArgument(
             "rviz",
             default_value="true",

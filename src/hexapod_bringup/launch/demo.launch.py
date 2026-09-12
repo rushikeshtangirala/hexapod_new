@@ -175,7 +175,10 @@ def generate_launch_description() -> LaunchDescription:
                     "use_sim_time": True,
                     "model_name": "hexapod",
                     "rate": 100.0,
-                    "ride_height": 0.195,
+                    # 0.132 = stance depth 0.12 + foot sphere radius 0.012,
+                    # for the revision 2 leg. Was 0.195 for the old
+                    # 150/117/150 leg.
+                    "ride_height": 0.132,
                     "max_linear_speed": LaunchConfiguration("max_linear_speed"),
                     "max_angular_speed": LaunchConfiguration("max_angular_speed"),
                 }],

@@ -78,8 +78,16 @@
            instead of an empty RViz and a guess. -->
       <xacro:if value="${use_meshes}">
         <visual>
-          <origin xyz="${coxa_mesh_nudge}" rpy="0 0 0"/>
+          <origin xyz="${coxa_mesh_nudge}" rpy="${coxa_mesh_rpy}"/>
           <geometry>
+            <!-- NOT swapped. coxa.stl is the forked clevis at the LEFT end of
+                 the assembled CAD leg, the part that bolts to the body, so it
+                 belongs on the coxa link. An earlier revision exchanged this
+                 with the tibia visual on a misreading of the assembly photo;
+                 that exchange has been removed and the splitter's own naming
+                 is trusted again. split_assembly.py sorts the three
+                 components along +X with the body end lowest, so the file
+                 called coxa really is the proximal part. -->
             <mesh filename="${mesh_dir}/coxa.stl" scale="${mesh_scale}"/>
           </geometry>
           <material name="coxa_orange"/>
@@ -135,27 +143,35 @@
          FEMUR. The lift joint.
     ================================================================ -->
     <link name="${prefix}_femur_link">
-      <!-- The femur is TWO STLs on ONE link: the bracket and its cover
-           plate. A URDF link may carry any number of visual elements; they
-           are simply unioned. This is the correct way to represent a
-           multi part rigid assembly. Do NOT invent an extra link and a
-           fixed joint for the cover plate: that adds a body to the physics
-           tree for no kinematic reason. -->
+      <!-- REVISION 2: the femur is a SINGLE part, 120 x 25 x 33 mm.
+           Revision 1 was a bracket plus a separate 5 mm cover plate, carried
+           as two <visual> elements on this one link with a stacking offset.
+           A URDF link may hold any number of visuals and they are simply
+           unioned, which was the right way to model that assembly. The new
+           CAD makes it one piece, so one visual. -->
       <xacro:if value="${use_meshes}">
         <visual>
-          <origin xyz="${femur_mesh_nudge}" rpy="0 0 0"/>
+          <origin xyz="${femur_mesh_nudge}" rpy="${femur_mesh_rpy}"/>
           <geometry>
-            <mesh filename="${mesh_dir}/femur_lower.stl" scale="${mesh_scale}"/>
+            <mesh filename="${mesh_dir}/femur.stl" scale="${mesh_scale}"/>
           </geometry>
           <material name="femur_blue"/>
         </visual>
-        <visual>
-          <origin xyz="0 0 ${femur_upper_z}" rpy="0 0 0"/>
-          <geometry>
-            <mesh filename="${mesh_dir}/femur_upper.stl" scale="${mesh_scale}"/>
-          </geometry>
-          <material name="femur_blue"/>
-        </visual>
+
+        <!-- The repeated joint bracket. Same printed part as the coxa, used
+             again here. Rigidly bolted, so it is an extra visual on this
+             link rather than a link of its own: it has no degree of freedom
+             and giving it a fixed joint would add a body to the physics tree
+             for nothing. Its 21 g is already inside femur_mass. -->
+        <xacro:if value="${show_joint_brackets}">
+          <visual>
+            <origin xyz="${femur_bracket_xyz}" rpy="${femur_bracket_rpy}"/>
+            <geometry>
+              <mesh filename="${mesh_dir}/${bracket_mesh}" scale="${mesh_scale}"/>
+            </geometry>
+            <material name="coxa_orange"/>
+          </visual>
+        </xacro:if>
       </xacro:if>
       <xacro:unless value="${use_meshes}">
         <visual>
@@ -198,12 +214,27 @@
     <link name="${prefix}_tibia_link">
       <xacro:if value="${use_meshes}">
         <visual>
-          <origin xyz="${tibia_mesh_nudge}" rpy="0 0 0"/>
+          <origin xyz="${tibia_mesh_nudge}" rpy="${tibia_mesh_rpy}"/>
           <geometry>
+            <!-- NOT swapped. tibia.stl is the trussed member at the RIGHT
+                 end of the assembled CAD leg, the one that carries the foot,
+                 so it belongs on the tibia link. See the matching note on
+                 the coxa link. -->
             <mesh filename="${mesh_dir}/tibia.stl" scale="${mesh_scale}"/>
           </geometry>
           <material name="tibia_green"/>
         </visual>
+
+        <!-- Third instance of the same bracket. Its 21 g is in tibia_mass. -->
+        <xacro:if value="${show_joint_brackets}">
+          <visual>
+            <origin xyz="${tibia_bracket_xyz}" rpy="${tibia_bracket_rpy}"/>
+            <geometry>
+              <mesh filename="${mesh_dir}/${bracket_mesh}" scale="${mesh_scale}"/>
+            </geometry>
+            <material name="coxa_orange"/>
+          </visual>
+        </xacro:if>
       </xacro:if>
       <xacro:unless value="${use_meshes}">
         <visual>

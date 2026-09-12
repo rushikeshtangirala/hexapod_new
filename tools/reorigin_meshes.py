@@ -70,12 +70,81 @@ except ImportError:
 
 
 # (input filename, output filename, anchor_x, anchor_y, anchor_z)
+# Revision 2: new leg design, original chassis.
+#
+#   coxa_raw.stl    61.0 x 25.0 x 51.5 mm    was 150 mm long
+#   femur_raw.stl  120.0 x 25.0 x 33.0 mm    was 117 mm, now ONE part
+#   tibia_raw.stl  109.8 x 61.3 x 25.3 mm    was 150 mm
+#   body test.stl  312.7 x 283.3 x 115 mm    unchanged
+#
+# The femur is a single part now, so femur_lower/femur_upper are gone and
+# leg_macro.xacro carries one femur visual instead of two.
+#
+# "washer test.stl" is deliberately absent: at 20 x 20 x 7 mm it is a
+# fastener, not a link. Hardware that does not move relative to its parent
+# belongs in the parent's mass, not in the kinematic tree. Adding a link and
+# a fixed joint for every washer would inflate the tree for no kinematic
+# benefit and slow the solver.
 PARTS = [
-    ("body test.stl",      "body.stl",        "center", "center", "center"),
-    ("coxa new.stl",       "coxa.stl",        "min",    "center", "center"),
-    ("femur bottom.stl",   "femur_lower.stl", "min",    "center", "center"),
-    ("femur top blah.stl", "femur_upper.stl", "min",    "center", "min"),
-    ("tibia final.stl",    "tibia.stl",       "min",    "center", "center"),
+    ("body test.stl", "body.stl",  "center", "center", "center"),
+    ("coxa_raw.stl",  "coxa.stl",  "min",    "center", "center"),
+    ("femur_raw.stl", "femur.stl", "min",    "center", "center"),
+    ("tibia_raw.stl", "tibia.stl", "min",    "center", "center"),
+]
+
+# =============================================================================
+# ASSEMBLY MODE  --  the correct way to do this, and the fix for orientation
+# =============================================================================
+# THE PROBLEM WITH LAYOUT-SHEET EXPORTS
+#
+# The parts above were exported individually, each laid flat on the XY plane
+# in its own convenient pose. That is fine for 3D printing and useless for
+# building a robot model, because it DISCARDS the relative orientation of the
+# parts. Once a part has been rotated onto a layout sheet, nothing in its STL
+# records which way it faced in the assembly.
+#
+# The consequence is that every part's roll about the leg axis has to be
+# rediscovered by trial and error, one 90 degree step at a time, per part.
+# That is the rpy guessing we have been doing, and it is avoidable.
+#
+# THE FIX: EXPORT IN ASSEMBLY POSITION
+#
+# Export each part WITHOUT moving it, straight out of the assembled leg, so
+# every part shares one coordinate system: the assembly's. Then the relative
+# orientations are already correct and are preserved automatically.
+#
+# All this script has to do then is a PURE TRANSLATION per part, moving each
+# link's joint to its own origin:
+#
+#     coxa  : joint is at the assembly origin       -> shift (0, 0, 0)
+#     femur : joint is L1 along the leg             -> shift (-L1, 0, 0)
+#     tibia : joint is L1+L2 along the leg          -> shift (-(L1+L2), 0, 0)
+#
+# No rotation, no guessing, nothing to tune by eye. The orientation problem
+# disappears rather than being solved.
+#
+# WHAT YOU MUST DO IN AUTOCAD FIRST
+#   1. Open the ASSEMBLED leg, joints at zero (leg straight).
+#   2. Move/rotate the whole assembly so that:
+#        - the COXA JOINT AXIS sits at the origin (0, 0, 0)
+#        - the leg extends along +X
+#        - "up" on the robot is +Z
+#      Move the assembly as one unit. Do not move parts relative to each other.
+#   3. Export each part SEPARATELY, without repositioning it:
+#        coxa_asm.stl   femur_asm.stl   tibia_asm.stl
+#
+# Then:  python3 tools/reorigin_meshes.py <dir> --assembly
+# =============================================================================
+
+# (input, output, x shift in millimetres). Y and Z are never shifted: in
+# assembly coordinates the part is already laterally and vertically correct.
+L1_MM = 61.0
+L2_MM = 120.0
+
+PARTS_ASSEMBLY = [
+    ("coxa_asm.stl",  "coxa.stl",  0.0),
+    ("femur_asm.stl", "femur.stl", -L1_MM),
+    ("tibia_asm.stl", "tibia.stl", -(L1_MM + L2_MM)),
 ]
 
 
@@ -89,6 +158,72 @@ def anchor_value(lo: float, hi: float, mode: str) -> float:
     raise ValueError(f"unknown anchor mode: {mode}")
 
 
+def run_assembly_mode(mesh_dir: pathlib.Path) -> int:
+    """
+    Pure translation, orientation preserved. See the long note above PARTS.
+
+    Nothing is rotated here, deliberately. If a part looks wrong after this,
+    the assembly was not aligned to +X before export, and the fix is in
+    AutoCAD rather than in a fudge factor here. Baking a correction into this
+    script would hide a wrong export and make the next one wrong too.
+    """
+    print("=" * 74)
+    print("RE-ORIGIN, ASSEMBLY MODE  (translation only, orientation preserved)")
+    print("=" * 74)
+
+    failures = 0
+    for src_name, dst_name, x_shift in PARTS_ASSEMBLY:
+        src = mesh_dir / src_name
+        if not src.exists():
+            print(f"\n[{src_name}]  NOT FOUND")
+            print("   Export it from the assembled leg without repositioning.")
+            failures += 1
+            continue
+
+        mesh = trimesh.load_mesh(src, process=True)
+        if isinstance(mesh, trimesh.Scene):
+            mesh = trimesh.util.concatenate(list(mesh.geometry.values()))
+
+        before_lo, before_hi = mesh.bounds
+        mesh.apply_translation([x_shift, 0.0, 0.0])
+        lo, hi = mesh.bounds
+        mesh.export(mesh_dir / dst_name)
+
+        print(f"\n[{src_name}]  ->  {dst_name}")
+        print(f"  x shift           : {x_shift:+.1f} mm")
+        print(f"  bbox before x     : [{before_lo[0]:9.3f} {before_hi[0]:9.3f}]")
+        print(f"  bbox after  x     : [{lo[0]:9.3f} {hi[0]:9.3f}]")
+        print(f"  bbox after  y     : [{lo[1]:9.3f} {hi[1]:9.3f}]")
+        print(f"  bbox after  z     : [{lo[2]:9.3f} {hi[2]:9.3f}]")
+
+        # The joint should now sit at x = 0, so the part should start at or
+        # very near zero and extend in +x. A large negative minimum means the
+        # link length constants do not match the real assembly.
+        if lo[0] < -5.0:
+            print(f"  >> WARNING: extends {abs(lo[0]):.1f} mm behind its joint.")
+            print("     Either that is real (a bracket wrapping the pivot), or")
+            print("     L1/L2 in this file do not match the assembly. Check the")
+            print("     axis-to-axis distances.")
+
+        # In assembly coordinates the leg lies along X, so a part whose Y or Z
+        # extent exceeds its X extent is either genuinely stubby (the coxa is)
+        # or was not aligned before export.
+        ext = hi - lo
+        if ext[0] < max(ext[1], ext[2]) and dst_name != "coxa.stl":
+            print("  >> WARNING: this part is not longest along X. The assembly")
+            print("     was probably not aligned to +X before export.")
+            failures += 1
+
+    print("\n" + "=" * 74)
+    if failures:
+        print(f"COMPLETED WITH {failures} ISSUE(S)")
+    else:
+        print("Done. Set every *_mesh_rpy back to '0 0 0': assembly-position")
+        print("exports carry the correct orientation already.")
+    print("=" * 74)
+    return 1 if failures else 0
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -96,6 +231,9 @@ def main() -> int:
     mesh_dir = pathlib.Path(sys.argv[1])
     if not mesh_dir.is_dir():
         sys.exit(f"Not a directory: {mesh_dir}")
+
+    if "--assembly" in sys.argv:
+        return run_assembly_mode(mesh_dir)
 
     print("=" * 74)
     print("RE-ORIGIN MESHES")

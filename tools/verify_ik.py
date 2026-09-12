@@ -141,26 +141,26 @@ print("\n3. Known standing pose agrees with tools/pose.sh")
 # ---------------------------------------------------------------------------
 # The stance angles baked into common_properties.xacro as initial_value, and
 # into tools/pose.sh as the 'stand' pose:
-#     femur = +0.2694 rad ( 15.44 deg), tibia = +1.1837 rad (+67.82 deg)
-# Independently expected foot position: 0.28 m out, 0.18 m down.
+#     femur = +0.0865 rad (  4.96 deg), tibia = +1.3979 rad (+80.09 deg)
+# Independently expected foot position: 0.19 m out, 0.12 m down.
 #
 # This cross-check matters because a round trip alone cannot catch an overall
 # convention flip: a consistently wrong system round-trips perfectly. Here we
 # compare against a number derived separately from the URDF's declared link
 # lengths, so a sign or frame error shows up.
-stand = forward_kinematics(leg, 0.0, 0.2694, 1.1837)
-check(abs(stand[0] - 0.28) < 2e-3, "stance pose radial reach",
-      f"expected 0.280, got {stand[0]:.4f}")
+stand = forward_kinematics(leg, 0.0, 0.0865, 1.3979)
+check(abs(stand[0] - 0.19) < 2e-3, "stance pose radial reach",
+      f"expected 0.190, got {stand[0]:.4f}")
 check(abs(stand[1]) < 1e-9, "stance pose has no lateral offset",
       f"got {stand[1]:.6f}")
-check(abs(stand[2] + 0.18) < 2e-3, "stance pose foot depth",
-      f"expected -0.180, got {stand[2]:.4f}")
+check(abs(stand[2] + 0.12) < 2e-3, "stance pose foot depth",
+      f"expected -0.120, got {stand[2]:.4f}")
 print(f"  foot at ({stand[0]:.4f}, {stand[1]:.4f}, {stand[2]:.4f}) m")
 
 # Round-tripping that pose must return the same angles, since it is on the
 # knee-DOWN branch that inverse_kinematics now selects.
 a1, a2, a3 = inverse_kinematics(leg, stand)
-check(abs(a2 - 0.2694) < 1e-3 and abs(a3 - 1.1837) < 1e-3,
+check(abs(a2 - 0.0865) < 1e-3 and abs(a3 - 1.3979) < 1e-3,
       "stance pose angles recovered",
       f"got femur {a2:.6f}, tibia {a3:.6f}")
 
@@ -215,8 +215,8 @@ print("\n6. Full body-frame IK for the default stance, all six legs")
 # geometry; it is not tuning.
 #
 # MIN_MARGIN below turns this from a judgement call into a test.
-STANCE_RADIUS = 0.28
-STANCE_HEIGHT = -0.18
+STANCE_RADIUS = 0.19
+STANCE_HEIGHT = -0.12
 MIN_MARGIN = math.radians(15.0)
 
 print(f"  stance: radius {STANCE_RADIUS:.3f} m, height {STANCE_HEIGHT:.3f} m")
