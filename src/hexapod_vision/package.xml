@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>hexapod_vision</name>
+  <version>0.1.0</version>
+  <description>
+    Perception for the hexapod. Detects plant stems in the forward camera by
+    colour and shape, and publishes a bearing and a range estimate that the
+    approach controller consumes. Depends on the camera topic only, never on
+    Gazebo, so the same node runs unchanged against a real camera.
+  </description>
+  <maintainer email="hexapod69420@gmail.com">Varun</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <!-- cv_bridge converts sensor_msgs/Image to a numpy array OpenCV can use.
+       python3-opencv is the detection itself. Both are apt packages, not pip
+       installs: ros-humble-cv-bridge and python3-opencv. -->
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

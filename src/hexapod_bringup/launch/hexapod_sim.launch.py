@@ -133,6 +133,9 @@ def generate_launch_description() -> LaunchDescription:
             " fix_base_height:=", LaunchConfiguration("fix_base_height"),
             " control_mode:=", LaunchConfiguration("control_mode"),
             " sim_profile:=", LaunchConfiguration("sim_profile"),
+            " enable_imu:=", LaunchConfiguration("enable_imu"),
+            " enable_camera:=", LaunchConfiguration("enable_camera"),
+            " enable_lidar:=", LaunchConfiguration("enable_lidar"),
         ]),
         value_type=str,
     )
@@ -289,6 +292,46 @@ def generate_launch_description() -> LaunchDescription:
     #
     # If you change stance_height in common_properties.xacro, change this.
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # SPAWN HEIGHT AND THE WORLD ANCHOR ADD UP. THEY MUST NOT BOTH APPLY.
+    #
+    # This was a real bug and it was present from the first Gazebo launch.
+    #
+    # With fix_base:=true the URDF gains a link called `world` and a fixed
+    # joint holding base_link at fix_base_height. What is easy to miss is
+    # that spawn_entity's -z is a separate thing: it places the whole MODEL
+    # in the world, and the joint offset is then applied on top of it. The
+    # two compose rather than one overriding the other, so the body sat at
+    #
+    #     0.16 (spawn) + 0.132 (anchor) = 0.292 m
+    #
+    # with the feet 0.16 m clear of the ground. Every "anchored" run so far
+    # was cycling its legs in mid air.
+    #
+    # HOW IT WAS FOUND, which is the part worth keeping. Not by looking at
+    # the robot, where 16 cm of clearance reads as "slightly high" and gets
+    # explained away. The stem detector projected a known target onto the
+    # ground and reported 0.51 m where the world file says 1.00 m; solving
+    # that back through the camera geometry demanded a camera height of
+    # 0.295 m, and 0.292 was sitting right there in the launch arguments.
+    # A perception error measured a kinematics error, because both read the
+    # same physical quantity.
+    #
+    # WHY IT MATTERS BEYOND COSMETICS. The anchored configuration exists to
+    # prove that contact and friction are sound, so that free-base drift can
+    # be blamed on the floating base alone. Feet that never touch the ground
+    # prove nothing of the sort. Any earlier claim resting on the anchored
+    # run needs re-checking now that the feet are actually loaded.
+    #
+    # THE FIX. When the base is welded, the weld alone sets the height, so
+    # the model spawns at zero. When it is free, spawn_height applies as it
+    # always did.
+    # ------------------------------------------------------------------
+    effective_spawn_z = PythonExpression([
+        "'0.0' if '", LaunchConfiguration("fix_base"),
+        "' == 'true' else '", LaunchConfiguration("spawn_height"), "'",
+    ])
+
     spawn_entity = Node(
         package="gazebo_ros",
         executable="spawn_entity.py",
@@ -297,7 +340,7 @@ def generate_launch_description() -> LaunchDescription:
         arguments=[
             "-topic", "robot_description",
             "-entity", "hexapod",
-            "-z", LaunchConfiguration("spawn_height"),
+            "-z", effective_spawn_z,
         ],
     )
 
@@ -404,6 +447,24 @@ def generate_launch_description() -> LaunchDescription:
         # thing you are still working on.
         #
         # To work on it:  control_mode:=effort fix_base:=false
+        # ------------------------------------------------------------------
+        # Sensors, checkpoint 6. Defaults match hexapod.sensors.xacro: IMU on
+        # because it renders nothing, camera and lidar off because rendering
+        # is the most expensive thing Gazebo Classic does and the gait is
+        # tuned against simulated time. Turning them on can halve the real
+        # time factor, so they are opt in per launch rather than always paid
+        # for.
+        # ------------------------------------------------------------------
+        DeclareLaunchArgument("enable_imu", default_value="true",
+                              description="Body IMU, publishes /imu/data."),
+        DeclareLaunchArgument("enable_camera", default_value="false",
+                              description="Forward camera, publishes "
+                                          "/camera/image_raw. Needed for "
+                                          "checkpoint 8."),
+        DeclareLaunchArgument("enable_lidar", default_value="false",
+                              description="Top lidar, publishes /scan. "
+                                          "Needed for checkpoint 7."),
+
         DeclareLaunchArgument("control_mode", default_value="position",
                               description="position (validated) or effort "
                                           "(free base, gains being tuned)."),

@@ -1,0 +1,358 @@
+<?xml version="1.0"?>
+<!--
+  hexapod.sensors.xacro : IMU, CAMERA AND LIDAR
+  ==========================================================================
+  CHECKPOINT 6. Three sensors, each behind its own flag.
+
+  WHAT A "SENSOR" IS IN A URDF, AND WHY IT IS TWO SEPARATE THINGS
+  ==========================================================================
+  A simulated sensor is always two declarations that must agree:
+
+    1. A LINK, in the URDF proper. This is geometry and a coordinate frame.
+       It says where the device physically sits and how heavy it is. RViz,
+       TF and the physics engine all use this and none of them know it is a
+       sensor at all.
+
+    2. A <gazebo><sensor> block. This is the simulated PHYSICS of measuring:
+       the ray casting, the image rendering, the noise model, and the plugin
+       that turns the result into a ROS message.
+
+  The link exists whether or not you are simulating. The sensor block exists
+  only in simulation, because on real hardware the driver publishes the same
+  topic and nothing else in the stack can tell the difference. That is the
+  same swappable boundary as the hardware interface, applied to perception,
+  and it is why these blocks are gated on the sim flag at the include site
+  rather than written into the link definitions.
+
+  WHY EACH SENSOR IS OPTIONAL, AND WHY TWO DEFAULT TO OFF
+  ==========================================================================
+  Rendering is the single most expensive thing Gazebo Classic does. A 640x480
+  camera at 15 Hz costs far more than the entire 18 joint physics solve, and
+  a 360 sample lidar at 10 Hz is 3600 ray casts per second through the whole
+  world geometry. Turning both on can halve the real time factor, which
+  matters because the gait is tuned against simulated time: a robot that
+  walks correctly at RTF 1.0 can look quite different at RTF 0.4.
+
+  So the defaults are chosen to CHANGE NOTHING that already works. The IMU is
+  on, because it renders nothing and costs almost zero. The camera and lidar
+  are off until you ask for them:
+
+      ros2 launch hexapod_bringup hexapod_sim.launch.py \
+           enable_camera:=true enable_lidar:=true
+
+  Every launch you have run so far behaves exactly as before.
+
+  MASS IS NOT FREE EITHER
+  ==========================================================================
+  These are real numbers for real parts, not placeholders: an RPLIDAR A1 is
+  about 170 g, a Pi camera module with its mount about 50 g, a breakout IMU
+  about 20 g. With everything enabled that is 0.24 kg on a 2.99 kg robot,
+  roughly 8 percent, and it sits ABOVE and FORWARD of the centre of mass. It
+  therefore raises the stance torque slightly and moves the centre of mass
+  forward, which shrinks the stability margin of the rear support triangle.
+  Small, but real, and worth one sentence in the report rather than being
+  discovered as an unexplained change in behaviour.
+
+  Every fixed joint is collapsed into its parent by Gazebo at load time, so
+  these masses end up added to base_link exactly as the real parts would be
+  bolted to the real chassis.
+==========================================================================  -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="enable_imu"    default="true"/>
+  <xacro:arg name="enable_camera" default="false"/>
+  <xacro:arg name="enable_lidar"  default="false"/>
+
+  <xacro:property name="use_imu"    value="$(arg enable_imu)"/>
+  <xacro:property name="use_camera" value="$(arg enable_camera)"/>
+  <xacro:property name="use_lidar"  value="$(arg enable_lidar)"/>
+
+  <!-- Mount points, derived from the body box rather than typed in, so that
+       changing body_length or body_height moves the sensors with it. The
+       front face is at +body_length/2 and the top face at +body_height/2. -->
+  <xacro:property name="cam_x"   value="${body_length/2}"/>
+  <xacro:property name="cam_z"   value="0.0"/>
+  <xacro:property name="cam_pitch" value="${25.0 * pi / 180.0}"/>
+  <xacro:property name="lidar_z" value="${body_height/2 + 0.030}"/>
+
+  <material name="sensor_black">
+    <color rgba="0.08 0.08 0.10 1.0"/>
+  </material>
+
+  <!-- ====================================================================
+       IMU
+
+       WHAT IT IS. An inertial measurement unit reports angular velocity from
+       three gyroscopes and linear acceleration from three accelerometers. It
+       measures nothing about the world, only about its own motion, so it
+       drifts without bound if you integrate it and is useless on its own for
+       position. What it IS good for is attitude: gravity gives the
+       accelerometers a permanent downward reference, so roll and pitch are
+       observable and bounded. Yaw is not, which is why a magnetometer or a
+       lidar is needed to fix heading.
+
+       WHY A WALKING ROBOT NEEDS ONE. Everything downstream assumes the body
+       is roughly level. The gait places feet in body coordinates, so if the
+       body pitches 10 degrees the whole support polygon tilts with it and
+       the commanded stance height is no longer the true height above ground.
+       A wheeled robot can ignore this. A legged robot cannot, because it
+       generates its own attitude disturbance every single step.
+
+       WHY IT MOUNTS AT THE CENTRE OF MASS. An accelerometer at radius r from
+       the rotation centre also measures centripetal and tangential terms,
+       w x (w x r) and alpha x r, which are indistinguishable from real
+       acceleration. Mounting at the centre of mass makes r zero and those
+       terms vanish. On a body that rocks every step this is the difference
+       between a usable signal and one that needs the lever arm subtracted
+       out in software.
+
+       BEGINNER MISTAKE. Trusting the orientation field. Gazebo's IMU plugin
+       can report ground truth orientation, which looks wonderful and teaches
+       you nothing, because the real device has no such output. Setting
+       initial_orientation_as_reference false keeps it honest: orientation is
+       integrated from the gyro like the real thing, drift included.
+  ==================================================================== -->
+  <xacro:if value="${use_imu}">
+    <link name="imu_link">
+      <visual>
+        <geometry><box size="0.020 0.020 0.005"/></geometry>
+        <material name="sensor_black"/>
+      </visual>
+      <xacro:inertial_box mass="0.020" x="0.020" y="0.020" z="0.005">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+      </xacro:inertial_box>
+    </link>
+
+    <joint name="imu_joint" type="fixed">
+      <parent link="base_link"/>
+      <child  link="imu_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <gazebo reference="imu_link">
+      <sensor name="imu_sensor" type="imu">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <visualize>false</visualize>
+        <!-- Noise densities are representative of an MPU6050 class part.
+             Zero noise is the wrong default: it lets a filter be tuned to
+             perfection in simulation and then fall apart on hardware. -->
+        <imu>
+          <angular_velocity>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev></noise></z>
+          </linear_acceleration>
+        </imu>
+        <plugin name="imu_plugin" filename="libgazebo_ros_imu_sensor.so">
+          <ros>
+            <namespace>/</namespace>
+            <remapping>~/out:=imu/data</remapping>
+          </ros>
+          <initial_orientation_as_reference>false</initial_orientation_as_reference>
+          <frame_name>imu_link</frame_name>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:if>
+
+  <!-- ====================================================================
+       FORWARD CAMERA
+
+       PURPOSE. This is the sensor checkpoint 8 detects stems with, so its
+       aim is chosen by what it must see, not by where it looks tidy.
+
+       THE GEOMETRY, WORKED OUT RATHER THAN GUESSED. The body stands about
+       0.125 m above the ground. The camera is pitched down 25 degrees and
+       has a 60 degree horizontal field of view, which at 4:3 is about 46
+       degrees vertically, so rays leave between 2 and 48 degrees below
+       horizontal. Where they meet the ground:
+
+           near edge   0.125 / tan(48 deg) = 0.11 m ahead
+           far edge    0.125 / tan(2 deg)  = 3.6 m ahead
+
+       So a stem stays in frame from 3.6 m away right down to 11 cm, which is
+       inside the reach of a nozzle on the front of the body. That continuity
+       is the whole requirement: a controller that loses its target during
+       the final approach has to guess, and guessing is what makes a demo
+       fail in front of an examiner. Pitch it further down and the robot goes
+       blind at range; level it out and it loses the stem just as it arrives.
+
+       TWO FRAMES, AND WHY THE SECOND ONE IS NOT OPTIONAL. ROS has two
+       conventions that disagree on purpose. REP 103 says a body frame is X
+       forward, Y left, Z up. REP 145 says an optical frame is Z forward,
+       X right, Y down, because that is what every camera calibration and
+       projection formula in computer vision assumes. camera_link follows the
+       first, camera_optical_link the second, and the fixed joint between
+       them carries the rotation that converts one to the other.
+
+       The plugin publishes with frame_name set to the OPTICAL frame. Point
+       it at camera_link instead and nothing errors: image_proc, any
+       projection from pixel to ray, and RViz's camera display are all simply
+       rotated 90 degrees, and you chase that as a vision bug for an evening.
+  ==================================================================== -->
+  <xacro:if value="${use_camera}">
+    <link name="camera_link">
+      <visual>
+        <geometry><box size="0.015 0.030 0.030"/></geometry>
+        <material name="sensor_black"/>
+      </visual>
+      <xacro:inertial_box mass="0.050" x="0.015" y="0.030" z="0.030">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+      </xacro:inertial_box>
+    </link>
+
+    <joint name="camera_joint" type="fixed">
+      <parent link="base_link"/>
+      <child  link="camera_link"/>
+      <origin xyz="${cam_x} 0 ${cam_z}" rpy="0 ${cam_pitch} 0"/>
+    </joint>
+
+    <!-- The REP 103 to REP 145 rotation. Read as: roll minus 90, then yaw
+         minus 90. Nothing about the physical device changes; this is purely
+         a relabelling of axes for the benefit of vision code. -->
+    <link name="camera_optical_link"/>
+    <joint name="camera_optical_joint" type="fixed">
+      <parent link="camera_link"/>
+      <child  link="camera_optical_link"/>
+      <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+    </joint>
+
+    <gazebo reference="camera_link">
+      <material>Gazebo/Black</material>
+      <sensor name="front_camera" type="camera">
+        <always_on>true</always_on>
+        <!-- 15 Hz, not 30. Detection runs far slower than this anyway, and
+             every frame is a full render of the world. -->
+        <update_rate>15.0</update_rate>
+        <visualize>false</visualize>
+        <camera name="front">
+          <horizontal_fov>1.0472</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.02</near>
+            <far>30.0</far>
+          </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.007</stddev>
+          </noise>
+        </camera>
+        <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
+          <ros>
+            <namespace>/</namespace>
+          </ros>
+          <camera_name>camera</camera_name>
+          <frame_name>camera_optical_link</frame_name>
+          <hack_baseline>0.0</hack_baseline>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:if>
+
+  <!-- ====================================================================
+       LIDAR
+
+       WHAT IT IS. A spinning rangefinder that reports distance to the
+       nearest obstacle at a few hundred angles around a horizontal circle.
+       Unlike a camera it measures geometry directly, in metres, and does not
+       care about lighting or colour. That is exactly why mapping uses it: a
+       scan can be matched against a map without any appearance model.
+
+       WHY IT IS MOUNTED HIGH. Two reasons, both learned the hard way by
+       everyone who mounts one low. First, self occlusion: a scan plane that
+       passes through the robot sees the robot, and those returns look like a
+       wall wrapped around the sensor. Mounting 30 mm above the top face puts
+       the plane clear of the chassis. Second, LEG occlusion, which is the
+       hexapod specific version: six legs swinging through a scan plane at
+       body height would chop it into moving shadows, and no scan matcher can
+       tell a leg from a table leg.
+
+       THE PROBLEM A LEGGED ROBOT HAS AND A WHEELED ONE DOES NOT. Scan
+       matching assumes successive scans come from the same plane. A hexapod
+       pitches and rolls a degree or two every step, so the plane tilts, and
+       at 5 m a 2 degree tilt moves the apparent surface by 17 cm. That is
+       larger than most map resolutions, and it is why checkpoint 7 is scoped
+       to producing a map rather than navigating from one. Honest scoping is
+       worth more in a report than a map that quietly does not close.
+
+       min_range MUST clear the robot. 0.12 m is beyond the widest point of
+       the chassis, so the sensor cannot return its own frame.
+  ==================================================================== -->
+  <xacro:if value="${use_lidar}">
+    <link name="lidar_link">
+      <visual>
+        <geometry><cylinder radius="0.035" length="0.040"/></geometry>
+        <material name="sensor_black"/>
+      </visual>
+      <collision>
+        <geometry><cylinder radius="0.035" length="0.040"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="0.170"/>
+        <!-- Solid cylinder about Z: Ixx = Iyy = m(3r^2 + h^2)/12,
+             Izz = m r^2 / 2. Written out rather than reusing
+             inertial_cylinder_x, whose axis of symmetry is X. -->
+        <inertia ixx="6.47e-5" ixy="0.0" ixz="0.0"
+                 iyy="6.47e-5" iyz="0.0"
+                 izz="1.04e-4"/>
+      </inertial>
+    </link>
+
+    <joint name="lidar_joint" type="fixed">
+      <parent link="base_link"/>
+      <child  link="lidar_link"/>
+      <origin xyz="0 0 ${lidar_z}" rpy="0 0 0"/>
+    </joint>
+
+    <gazebo reference="lidar_link">
+      <material>Gazebo/Black</material>
+      <sensor name="lidar" type="ray">
+        <always_on>true</always_on>
+        <update_rate>10</update_rate>
+        <!-- Set true to see the blue fan in the Gazebo window. Costs frame
+             rate, so it is a debugging aid and not a default. -->
+        <visualize>false</visualize>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>360</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.14159</min_angle>
+              <max_angle>3.14159</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.12</min>
+            <max>12.0</max>
+            <resolution>0.015</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.01</stddev>
+          </noise>
+        </ray>
+        <plugin name="lidar_controller" filename="libgazebo_ros_ray_sensor.so">
+          <ros>
+            <namespace>/</namespace>
+            <remapping>~/out:=scan</remapping>
+          </ros>
+          <output_type>sensor_msgs/LaserScan</output_type>
+          <frame_name>lidar_link</frame_name>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:if>
+
+</robot>

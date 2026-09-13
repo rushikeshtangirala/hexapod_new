@@ -212,4 +212,26 @@
                      mount_z="${mount_z}"
                      mount_yaw="${-mount_yaw_rear}"/>
 
+  <!-- ====================================================================
+       SENSORS. Checkpoint 6.
+
+       Included LAST because it needs body_length and body_height to place
+       the mounts, and the inertial macros to give the sensor links mass.
+       Xacro expands includes in place, so anything a file uses must already
+       have been defined above it.
+
+       NOT inside the sim guard, deliberately. A sensor is a link plus a
+       simulated measurement, and only the second half is simulation. The
+       links describe where real devices bolt to the real chassis and must
+       exist in every build, or the TF tree changes shape the moment you move
+       to hardware and every transform lookup written against it breaks.
+       The <gazebo> blocks inside are simply ignored by anything that is not
+       Gazebo, which is why this is safe rather than merely convenient.
+
+       Defaults: IMU on, camera and lidar off. See the header of that file
+       for why. Every launch that worked before this file existed behaves
+       identically until you pass enable_camera or enable_lidar.
+  ==================================================================== -->
+  <xacro:include filename="$(find hexapod_description)/urdf/hexapod.sensors.xacro"/>
+
 </robot>

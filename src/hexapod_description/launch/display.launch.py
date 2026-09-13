@@ -78,6 +78,9 @@ def generate_launch_description() -> LaunchDescription:
             " tibia_rpy:='", LaunchConfiguration("tibia_rpy"), "'",
             " tibia_nudge:='", LaunchConfiguration("tibia_nudge"), "'",
             " body_rpy:='", LaunchConfiguration("body_rpy"), "'",
+            " enable_imu:=", LaunchConfiguration("enable_imu"),
+            " enable_camera:=", LaunchConfiguration("enable_camera"),
+            " enable_lidar:=", LaunchConfiguration("enable_lidar"),
         ]),
         value_type=str,
     )
@@ -106,6 +109,19 @@ def generate_launch_description() -> LaunchDescription:
                                           "equal the mesh x span whenever "
                                           "tibia_rpy contains a 180 degree "
                                           "turn about Y."),
+        # Sensors. Here they are all defaulted ON, unlike the simulation
+        # launch. RViz only draws the LINKS and reads the TF tree; it never
+        # renders an image or casts a ray, so the cost that makes them opt in
+        # under Gazebo does not exist here. This is the cheapest way to check
+        # that a mount pose is right before paying for the simulated sensor.
+        DeclareLaunchArgument("enable_imu", default_value="true",
+                              description="Show the IMU link."),
+        DeclareLaunchArgument("enable_camera", default_value="true",
+                              description="Show the camera links, including "
+                                          "the optical frame."),
+        DeclareLaunchArgument("enable_lidar", default_value="true",
+                              description="Show the lidar link."),
+
         DeclareLaunchArgument("body_rpy", default_value="0 0 0",
                               description="Body mesh roll pitch yaw."),
         DeclareLaunchArgument(

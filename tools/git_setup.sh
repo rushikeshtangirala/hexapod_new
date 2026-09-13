@@ -115,10 +115,50 @@ else
     git commit -q -m "${MESSAGE}" || die "git commit"
   else
     git commit -q -m "Project state $(date +%Y-%m-%d)" -m \
-"Verified offline: verify_ik.py 32/32, verify_gait.py 498/498.
-Simulation: walks with the base anchored. Free-base effort control
-is the open item. Visual meshes sit on their correct links; the
-earlier coxa/tibia visual exchange has been removed." || die "git commit"
+"Checkpoints 1 to 6 and 8 complete.
+
+MODEL
+- Visual meshes sit on their correct links. The earlier coxa/tibia
+  visual exchange in leg_macro.xacro has been removed: coxa.stl is
+  the forked clevis at the body, tibia.stl the truss at the foot.
+- hexapod.sensors.xacro adds IMU, forward camera and lidar, each
+  behind its own flag. Camera and lidar default off because
+  rendering roughly halves the real time factor.
+
+BUG: SPAWN HEIGHT AND WORLD ANCHOR WERE ADDING
+- With fix_base true, spawn_entity -z placed the whole model and the
+  world weld then applied on top, so the body sat at 0.16 + 0.132 =
+  0.292 m with the feet 0.16 m clear of the ground. Every anchored
+  run so far was cycling its legs in mid air.
+- Found by the stem detector: it projected a target of known
+  position onto the ground and reported 0.51 m against a true
+  1.00 m, which solves back to a camera height of 0.295 m.
+- Fixed by spawning at zero whenever the base is welded.
+
+CONTROL
+- Effort gains reduced, not raised. Swing inertia at the femur is
+  about 2.5e-3 kg m^2, so p = 1500 put the closed loop at 123 Hz
+  against a 200 Hz control rate: under two samples per period. p is
+  now 120 to 160 and the integral term carries the constant gravity
+  load instead.
+
+PERCEPTION
+- New package hexapod_vision. stem_detector finds green stems by
+  hue and aspect ratio and recovers range by intersecting the pixel
+  ray with the ground plane, which needs only the stem base to be
+  visible.
+- hexapod.world gains three green stems at known positions plus a
+  red decoy that tests hue discrimination. The ten side markers are
+  removed.
+
+VERIFIED
+- verify_ik.py 32/32, verify_gait.py 498/498.
+- tools/check_vision.sh checks checkpoint 8 end to end in one
+  command and compares against ground truth.
+
+OPEN
+- Free base walking under effort control (Gate 4).
+- Checkpoints 7, 9, 10, 11." || die "git commit"
   fi
   echo "  committed"
 fi
@@ -131,9 +171,17 @@ echo "  tracked files: $(git ls-files | wc -l)"
 # ---------------------------------------------------------------------------
 say "5/5  remote"
 # ---------------------------------------------------------------------------
+# If no URL was given but origin already exists, push to it. Requiring the
+# URL every single time turns routine "share my progress" into a trip to the
+# browser to copy a string git already knows.
+if [ -z "${REMOTE_URL}" ] && git remote | grep -qx origin; then
+  REMOTE_URL=$(git remote get-url origin)
+  echo "  using the existing origin: ${REMOTE_URL}"
+fi
+
 if [ -z "${REMOTE_URL}" ]; then
   cat <<'EOF'
-  No remote URL given, so nothing was pushed.
+  No remote URL given and no origin is set, so nothing was pushed.
 
   TO PUT THIS ON GITHUB
   ---------------------

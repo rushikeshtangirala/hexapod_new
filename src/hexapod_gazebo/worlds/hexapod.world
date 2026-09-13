@@ -186,65 +186,100 @@
          what any measurement here needs.
     ==================================================================== -->
     <!-- ====================================================================
-         DISTANCE MARKERS.  Visual only, no collision, static.
+         DISTANCE MARKERS, REMOVED.
 
-         WHY A DEMO NEEDS THESE
-         On a featureless grey ground plane a walking robot is genuinely hard
-         to see moving, especially on a screen recording where the camera does
-         not follow it. Viewers read the leg motion and cannot tell whether the
-         body is travelling, which is the exact ambiguity this whole project
-         has been fighting. Posts every half metre make translation obvious at
-         a glance and give the video a sense of scale.
+         Ten orange and blue posts used to stand 0.9 m either side of the
+         walking line at half metre intervals. Their job was to make body
+         TRANSLATION visible: on a featureless grey plane a walking robot is
+         genuinely hard to tell from a robot cycling its legs on the spot,
+         which is the exact ambiguity this project spent weeks on.
 
-         NO COLLISION ELEMENT, deliberately. They are scenery. A collision
-         shape would let the robot clip one mid-demonstration and be flung
-         across the world, which is precisely the failure the kinematic demo
-         exists to make impossible. Placed 0.9 m either side of the walking
-         line as well, so they are out of the way regardless.
+         They are gone because that job is now done better by two things that
+         did not exist when they were added. /odom reports body position as a
+         number, and the ground plane's own grid gives scale in the video. A
+         measurement beats a visual cue.
+
+         There is also a perception reason not to miss them. Once the camera
+         existed, ten saturated posts sat permanently in frame as colour
+         detector clutter that served no purpose, since the red decoy already
+         tests hue discrimination from the middle of the scene where it
+         actually matters.
+
+         If a future demo video needs scale cues again, they were visual only
+         and static, 0.05 m square by 0.3 m tall, and the history has them.
     ==================================================================== -->
-    <model name="distance_markers">
+
+    <!-- ==================================================================
+         CROP ROW.  Targets for checkpoints 8 and 9.
+
+         GREEN STEMS, at known ground truth positions so that a detection
+         can be checked against a number rather than against an impression:
+
+             stem_a   1.00 m ahead, centred
+             stem_b   1.80 m ahead, 0.35 m left
+             stem_c   2.60 m ahead, 0.30 m right
+
+         Each is 0.30 m tall and 0.024 m across. Offsetting b and c means the
+         robot must actually steer toward them; three stems in a straight
+         line would let a broken controller that only ever walks forward look
+         like it was working.
+
+         THE RED DECOY IS NOT DECORATION. A colour detector that reports the
+         largest bright blob will "work" perfectly in a world containing only
+         one coloured object, and fail the moment anything else is present.
+         stem_decoy is the same size and shape as a real stem and sits
+         between a and b, so the only thing separating them is hue. If the
+         detector locks onto it, the threshold is wrong, and you find that
+         out here instead of during the demonstration. The existing orange
+         and blue distance markers serve the same purpose at the edges of
+         frame.
+
+         VISUAL ONLY, NO COLLISION, AND STATIC. Contact is the expensive part
+         of a physics step, and nothing here needs to be touched: the robot
+         stops at a standoff distance and sprays. Giving these collision
+         geometry would add six more contact candidates per step and let a
+         mistimed approach knock the targets over mid demonstration.
+    ================================================================== -->
+    <model name="crop_row">
       <static>true</static>
-      <link name="markers">
-        <visual name="m_0_l"><pose>0.0 0.9 0.15 0 0 0</pose>
-          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
-          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
+      <link name="stems">
+
+        <visual name="stem_a">
+          <pose>1.00 0.00 0.15 0 0 0</pose>
+          <geometry><cylinder><radius>0.012</radius><length>0.30</length></cylinder></geometry>
+          <material>
+            <ambient>0.10 0.55 0.15 1</ambient>
+            <diffuse>0.15 0.75 0.20 1</diffuse>
+          </material>
         </visual>
-        <visual name="m_0_r"><pose>0.0 -0.9 0.15 0 0 0</pose>
-          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
-          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
+
+        <visual name="stem_b">
+          <pose>1.80 0.35 0.15 0 0 0</pose>
+          <geometry><cylinder><radius>0.012</radius><length>0.30</length></cylinder></geometry>
+          <material>
+            <ambient>0.10 0.55 0.15 1</ambient>
+            <diffuse>0.15 0.75 0.20 1</diffuse>
+          </material>
         </visual>
-        <visual name="m_1_l"><pose>0.5 0.9 0.1 0 0 0</pose>
-          <geometry><box><size>0.04 0.04 0.2</size></box></geometry>
-          <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material>
+
+        <visual name="stem_c">
+          <pose>2.60 -0.30 0.15 0 0 0</pose>
+          <geometry><cylinder><radius>0.012</radius><length>0.30</length></cylinder></geometry>
+          <material>
+            <ambient>0.10 0.55 0.15 1</ambient>
+            <diffuse>0.15 0.75 0.20 1</diffuse>
+          </material>
         </visual>
-        <visual name="m_1_r"><pose>0.5 -0.9 0.1 0 0 0</pose>
-          <geometry><box><size>0.04 0.04 0.2</size></box></geometry>
-          <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material>
+
+        <visual name="stem_decoy">
+          <pose>1.40 -0.45 0.15 0 0 0</pose>
+          <geometry><cylinder><radius>0.012</radius><length>0.30</length></cylinder></geometry>
+          <material>
+            <ambient>0.55 0.10 0.10 1</ambient>
+            <diffuse>0.80 0.15 0.15 1</diffuse>
+          </material>
         </visual>
-        <visual name="m_2_l"><pose>1.0 0.9 0.15 0 0 0</pose>
-          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
-          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
-        </visual>
-        <visual name="m_2_r"><pose>1.0 -0.9 0.15 0 0 0</pose>
-          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
-          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
-        </visual>
-        <visual name="m_3_l"><pose>1.5 0.9 0.1 0 0 0</pose>
-          <geometry><box><size>0.04 0.04 0.2</size></box></geometry>
-          <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material>
-        </visual>
-        <visual name="m_3_r"><pose>1.5 -0.9 0.1 0 0 0</pose>
-          <geometry><box><size>0.04 0.04 0.2</size></box></geometry>
-          <material><ambient>0.2 0.6 0.9 1</ambient><diffuse>0.2 0.6 0.9 1</diffuse></material>
-        </visual>
-        <visual name="m_4_l"><pose>2.0 0.9 0.15 0 0 0</pose>
-          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
-          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
-        </visual>
-        <visual name="m_4_r"><pose>2.0 -0.9 0.15 0 0 0</pose>
-          <geometry><box><size>0.05 0.05 0.3</size></box></geometry>
-          <material><ambient>0.9 0.3 0.1 1</ambient><diffuse>0.9 0.3 0.1 1</diffuse></material>
-        </visual>
+
       </link>
     </model>
 
