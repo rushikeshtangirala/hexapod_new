@@ -59,16 +59,36 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             "control_mode": LaunchConfiguration("control_mode"),
             "fix_base": LaunchConfiguration("fix_base"),
+            "spawn_height": LaunchConfiguration("spawn_height"),
             "gui": "true",
         }.items(),
     )
 
+    # ------------------------------------------------------------------
+    # control_mode is now forwarded EXPLICITLY, though it was already
+    # arriving.
+    #
+    # An included launch file inherits the parent's launch configurations,
+    # and a DeclareLaunchArgument does not override a configuration that is
+    # already set. So walk.launch.py was seeing this file's control_mode
+    # rather than its own "effort" default, which is why the anchored demo
+    # correctly published to /leg_position_controller/joint_trajectory.
+    #
+    # It is written out anyway because relying on inheritance makes the two
+    # files look independent when they are not: walk.launch.py's stated
+    # default is "effort" and it has never once taken effect from here.
+    # Passing it explicitly means the coupling is visible at the call site
+    # instead of being a property of launch's scoping rules.
+    # ------------------------------------------------------------------
     walk = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([bringup, "launch", "walk.launch.py"])
         ]),
         launch_arguments={
+            "control_mode": LaunchConfiguration("control_mode"),
             "command_type": LaunchConfiguration("command_type"),
+            "hold_only": LaunchConfiguration("hold_only"),
+            "startup_ramp": LaunchConfiguration("startup_ramp"),
             "use_sim_time": "true",
         }.items(),
     )
@@ -77,6 +97,20 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("control_mode", default_value="position"),
         DeclareLaunchArgument("fix_base", default_value="true"),
         DeclareLaunchArgument("command_type", default_value="trajectory"),
+
+        # Free-base spawn height. 0.135 gives 3 mm of clearance: the foot
+        # contact point is 0.132 below base_link, being the 0.120 stance
+        # depth plus the 0.012 foot sphere. Ignored when fix_base is true,
+        # because the weld then sets the height on its own.
+        DeclareLaunchArgument("spawn_height", default_value="0.135"),
+
+        # Bisection knobs, forwarded so the whole experiment is one command.
+        # hold_only exercises the entire command path without ever cycling a
+        # leg, which separates "the command path ejects it" from "the gait
+        # motion ejects it". Those have nothing in common and no single fix
+        # addresses both.
+        DeclareLaunchArgument("hold_only", default_value="false"),
+        DeclareLaunchArgument("startup_ramp", default_value="2.0"),
 
         sim,
 

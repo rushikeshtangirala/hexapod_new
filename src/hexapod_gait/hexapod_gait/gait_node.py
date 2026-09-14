@@ -74,14 +74,25 @@ class GaitNode(Node):
         self.declare_parameter("control_rate", 50.0)
         self.declare_parameter("cycle_time", 1.4)
         self.declare_parameter("step_height", 0.045)
-        # These MUST match GaitParams. 0.34 / -0.11 was the abandoned stance:
-        # 86% of full leg extension with the tibia horizontal, minimal ground
-        # clearance, and no vertical compliance to absorb touchdown. It was
-        # left here as a parameter default long after GaitParams moved to
-        # 0.28 / -0.18, and only walk.launch.py's override hid it. Running
-        # the node with `ros2 run` got the bad stance silently.
-        self.declare_parameter("stance_radius", 0.28)
-        self.declare_parameter("stance_height", -0.18)
+        # These MUST match GaitParams, and they have now drifted TWICE.
+        #
+        # First 0.34 / -0.11 was left here after GaitParams moved to
+        # 0.28 / -0.18. Then 0.28 / -0.18 was left here after the revision 2
+        # leg (61 / 120 / 110) moved GaitParams to 0.19 / -0.12. Both times
+        # walk.launch.py's override hid it, and both times `ros2 run` on the
+        # node got a silently wrong stance.
+        #
+        # 0.28 / -0.18 on the current leg is not merely suboptimal, it is
+        # UNREACHABLE: the foot would sit sqrt(0.219^2 + 0.18^2) = 0.284 m
+        # from the femur joint against a femur plus tibia reach of 0.230 m.
+        # The startup envelope check would refuse to run, which is the
+        # correct outcome but a baffling one if you do not know why.
+        #
+        # Defaults now read from GaitParams itself rather than being retyped,
+        # so this cannot drift a third time.
+        _gp_defaults = GaitParams()
+        self.declare_parameter("stance_radius", _gp_defaults.stance_radius)
+        self.declare_parameter("stance_height", _gp_defaults.stance_height)
         self.declare_parameter("max_stride", 0.10)
         self.declare_parameter("max_linear_speed", 0.10)
         self.declare_parameter("max_angular_speed", 0.50)

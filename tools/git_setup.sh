@@ -26,7 +26,25 @@
 # =============================================================================
 set -o pipefail
 
-HEX="/mnt/c/Users/Rushi Tangirala/OneDrive/Desktop/hexapod_scratch"
+# ---------------------------------------------------------------------------
+# WHERE THE PROJECT IS, WORKED OUT RATHER THAN TYPED IN.
+#
+# This used to be a hardcoded /mnt/c/Users/... path, which meant the script
+# only ran on one laptop belonging to one person. That is fine for a solo
+# project and useless the moment it is cloned, so the root is now derived
+# from the script's own location: this file lives in tools/, so the project
+# is its parent.
+#
+# Override with HEXAPOD_ROOT if you keep the checkout somewhere unusual:
+#     HEXAPOD_ROOT=~/code/hexapod bash tools/git_setup.sh
+# ---------------------------------------------------------------------------
+if [ -n "${HEXAPOD_ROOT:-}" ]; then
+  HEX="${HEXAPOD_ROOT}"
+else
+  SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  HEX="$(cd "${SELF_DIR}/.." && pwd)"
+fi
+
 REMOTE_URL="${1:-}"
 MESSAGE="${2:-}"
 
@@ -68,8 +86,17 @@ else
   echo "  already a repository"
 fi
 
-git config user.email "hexapod69420@gmail.com"
-git config user.name  "Varun"
+# Only set an identity if this checkout does not already have one, and never
+# override a global identity the user has configured. Unconditionally writing
+# one person's name here would attribute every collaborator's commits to them,
+# which quietly destroys the one thing a shared history is for.
+if ! git config user.email >/dev/null 2>&1; then
+  git config user.email "hexapod69420@gmail.com"
+  git config user.name  "Varun"
+  echo "  no git identity found, defaulted to Varun"
+else
+  echo "  committing as $(git config user.name) <$(git config user.email)>"
+fi
 
 # Windows and Linux disagree about line endings, and this tree is edited from
 # both. Without this, every file looks modified to whichever side did not
@@ -156,8 +183,23 @@ VERIFIED
 - tools/check_vision.sh checks checkpoint 8 end to end in one
   command and compares against ground truth.
 
+FREE BASE, PARTIAL
+- The robot now STANDS freely under effort control: 44 micrometres of
+  drift over 30 s, body height 0.139 m. The long-standing free-base
+  instability was the feet never touching the ground, plus a spawn
+  height that briefly buried them 11 mm below it.
+- It still fails when the gait node starts. Cause identified, not yet
+  fixed: the joints are unheld between physics starting and the
+  controllers activating, so the landing transient folds the legs
+  about 0.43 rad and joint friction then locks them in the folded
+  pose. The gait commands stance, and six planted legs attempt a 5 cm
+  push-up against each other, which tears the joints off their
+  parents.
+- Next thing to try, untested so far because the simulation was not
+  running on either attempt: startup_ramp of 10 to 15 seconds.
+
 OPEN
-- Free base walking under effort control (Gate 4).
+- Free base WALKING under effort control (Gate 4).
 - Checkpoints 7, 9, 10, 11." || die "git commit"
   fi
   echo "  committed"
